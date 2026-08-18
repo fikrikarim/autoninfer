@@ -215,7 +215,8 @@ First local M1 measurement (HEAD `5a3aab20`, GPU 1, 2026-08-18):
 
 - `tg128` decode: **111.82 ± 0.07 tok/s**, MTP acceptance **27.1%** (213 rounds, 0 fallbacks).
   Generic-corpus operating point; see the corpus-dependence note above before comparing it to
-  the 143.8 / 48.9% published C=1 point (sustained AIME stream).
+  the 143.8 / 48.9% published C=1 point (sustained AIME stream). Reproduced at the 2026-08-18
+  experiment HEAD: 111.42 ± 0.05 tok/s, 27.1%.
 
 ## Hypothesis backlog
 
@@ -238,6 +239,23 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
 
 ## Changelog (autoninfer setup)
 
+- **2026-08-18 — MTP head A/B measured; full head discarded (M1 regression).**
+  Per-position MTP acceptance on the generic corpus (tg512, `--lm-head-draft`): pos1 59.3% /
+  pos2 31.4% / pos3 12.3% — the collapse is along the sequential draft chain, not at pos1. A/B
+  against full-head drafting (same commands minus `--lm-head-draft`): on tg512 full head wins
+  (128.13 ± 0.10 vs 125.04 ± 0.25 tok/s, 42.64% vs 34.35% acceptance, per-position
+  459/252/150 vs 447/237/93, 675 vs 756 rounds, 0 vs 3 fallbacks), but on the M1 menu (tg128)
+  it **regresses**: 105.16 ± 0.09 vs 111.42 ± 0.05 tok/s (28.78% vs 27.14% acceptance,
+  per-position 120/45/12 vs 105/51/15). Mechanism: the full head's 248,320-row FP8 output GEMV
+  (~1.27 GB read per draft step, bandwidth-bound) costs ~1.5 ms more per round than the
+  131,072-row shortlist head; the +2.9% tokens/round on low-predictability tg128 content does not
+  amortize it, while the +12% on settled tg512 streams does. Decision: keep `--lm-head-draft`
+  as the canonical configuration (M1 is the protocol metric); output quality is unaffected by
+  either setting (exact target verification, `include/ninfer/ops/speculative_round.h`), so the
+  trade-off is speed-only. Follow-ups: (a) re-test the head swap on a real-text corpus
+  (`tools/bench/run_serve_corpus.py`) to decide the product regime; (b) the binding constraint
+  is the MTP layer's one-step quality (pos1 58–68% vs the 0.835 teacher-forced offline oracle),
+  which no head choice fixes.
 - **2026-08-18 — initial setup.** Changes made to the repository and harness:
   - `build/` reconfigured with `-DNINFER_BUILD_BENCHMARKS=ON -DBUILD_TESTING=ON` (the default
     configuration builds apps only).
