@@ -56,6 +56,26 @@ other_pi() {
   done
 }
 
+# Quiet = safe to restart the primary serve right now. A live interactive pi
+# alone is NOT a deferral reason: an idle session (between turns) holds no
+# in-flight request. Busy = live session AND (an established loopback socket
+# to the serve port - an in-flight/keep-alive HTTP request - or serve-log
+# growth in the last 5 s). The liveness-only rule deferred restart-primary for
+# hours while idle sessions sat between turns, leaving the stale 30 s
+# pending-timeout serve to expire driver iterations.
+serve_quiet() {
+  [ -n "$(other_pi)" ] || return 0
+  ss -Htn state established '( dport = :8080 )' 2>/dev/null | grep -q . && return 1
+  local pid s1 s2
+  for pid in $(pgrep -x ninfer-serve 2>/dev/null); do
+    s1=$(stat -c %s "/proc/$pid/fd/1" 2>/dev/null) || continue
+    sleep 5
+    s2=$(stat -c %s "/proc/$pid/fd/1" 2>/dev/null) || continue
+    if [ -n "$s1" ] && [ -n "$s2" ] && [ "$s2" -gt "$s1" ]; then return 1; fi
+  done
+  return 0
+}
+
 # Bring the supervised primary serve up; return 0 once /v1/models answers.
 restore_serve() {
   local svc_state pid
@@ -113,6 +133,9 @@ Hard rules:
 - If you are blocked on something only the user can do (instance restart, artifact restore, a product decision): append a row under "## Active blockers" in docs/autoninfer/BLOCKERS.md (date, blocker, needed action, why), commit + push, write the same reason to /tmp/autoninfer-stop, and end the iteration.
 - Keep the iteration self-contained: a single M1 bench takes ~2 minutes; if your experiment cannot finish in a reasonable time, narrow its scope, keep whatever result you have, and leave the rest as the next step in the handover. Do not start speculative multi-part changes you cannot finish and measure.
 - Pipeline the build + measurement (phase 1, 2026-08-18): for any experiment that needs a build and a measurement, run the pre-gate FIRST (on the current binary), implement + commit the change, then launch the fixed pipeline DETACHED - `setsid bash tools/autoninfer/experiment_run.sh <expname> < /dev/null & disown` - which serially runs: build, quality gate (label post-<expname>), and the M1 menu bench, writing a machine-readable summary to /tmp/autoninfer-exps/<expname>.result (transcript at .log). While it runs, keep doing LLM-side work (reading code for the next hypothesis, diffing the pre/post gate hashes once the gate stage finishes, drafting the handover skeleton, web research) - the runner owns build/ and GPU 1, so do NOT edit sources or start other GPU-1 work until it finishes. Collect with `bash tools/autoninfer/experiment_wait.sh <expname> 900` (exit 2 = still running: re-invoke to keep waiting; the pipeline is unaffected). Vary the M1 menu only via EXPERIMENT_M1_ARGS=... for A/B runs (e.g. "--mtp-draft-tokens 2").
+- Progress invariant (2026-08-18): an iteration must end with a RESULT - one of (a) a new results.tsv measurement row, (b) a committed code change (engine, tool, or protocol), or (c) a recorded decision (keep/discard/close, or a user-ratification row in BLOCKERS.md). Reading code and rewriting the handover is not a result. At most 2 consecutive analysis-only iterations; on the 3rd you must re-rank (next rule) and then either run an experiment or file a decision. The visible symptom of this failing is GPU 1 idling while iterations burn.
+- Proceed-vs-yield re-rank (the step-back rule, 2026-08-18): a hypothesis chain is re-ranked when it hits a discard, a falsified sub-hypothesis, or its 3rd consecutive analysis-only iteration. Spend at most 5 minutes on it: compare the expected M1 delta of the next step in the chain against the entry cost (build + tests + measure + fit risk) of the top backlog item. Continue the chain only if its next step is clearly the higher-value bet; otherwise YIELD - make the backlog item the next step in the handover. If yielding closes a series or changes a canonical configuration, that is a product decision: file a BLOCKERS.md row stating the decision proposed and the measurement behind it, so the user can ratify. A yield is recorded in the handover, never silent.
+- Background-work ledger (step 0 of every iteration, 2026-08-18): run `bash tools/autoninfer/bg.sh check` FIRST. Any STALE job (no progress in 15 min) or MISSING progress file: restart it once and record the restart in the handover; if it is still stale after one restart, file a BLOCKERS.md row. Every long-running detached job this iteration launches (downloads, pipeline runs) MUST be registered before the iteration ends: `bash tools/autoninfer/bg.sh add <name> <progress-file> [note]` (the progress file must grow while the job runs - the output file for a download, the .log for a pipeline run); finished jobs get `bg.sh forget <name>`. A dead background job is a blocker-level finding - it silently stalls the critical path.
 - Concurrent interactive sessions: another live pi session (a pi process whose ancestor chain reaches a user tty, not drive.sh/supervisord) may share this repository. If the tree is dirty at start, identify the owner from the handover plus `git diff` plus file mtimes, and check liveness (`ps -eo pid,ppid,stat,etime,cmd | grep -w pi`; exclude the sessions spawned by drive.sh (their grandparent is drive.sh)). If a live session owns the WIP, do not edit its files - but note that no-op backoff iterations are a protocol violation: at most 2 consecutive backoffs on the same dirt. On the 3rd iteration you must act: (a) if the WIP is converged (the handover says verified, or no writes to its files in 30+ minutes), take it over - build, run the affected tests, strip TEMP debug code and throwaway harnesses, commit + push - and continue; (b) if the owning session is gone, `git stash push -m "<what this was>"` it and proceed on the clean HEAD; (c) only if taking over is genuinely unsafe, append a BLOCKERS.md row plus /tmp/autoninfer-stop asking the user to decide. Never propagate a backoff instruction into the next handover - record the dirt state and liveness facts and let the next iteration decide fresh.
 - Budget: MAX_ITER is a safety cap on iteration count, not a time budget - never compute "time to budget exit" from the iteration count or the backoff pace.'
 
@@ -134,11 +157,11 @@ while true; do
     break
   fi
 
-  # 3. Pending serve ops. Deferred while another pi session is alive: restarting
-  # the primary then would kill that session's model mid-turn.
+  # 3. Pending serve ops. Deferred only while the interactive session looks
+  # busy (in-flight request); an idle session between turns no longer blocks.
   if [ -f "$OPS_DIR/pending.json" ]; then
-    if [ -n "$(other_pi)" ]; then
-      say "op pending but pi session(s) running (pids: $(other_pi | tr '\n' ' ')) - deferring until they exit"
+    if ! serve_quiet; then
+      say "op pending but serve looks busy (interactive socket/log activity) - deferring this round"
     else
       action=$(sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$OPS_DIR/pending.json")
       case "$action" in
