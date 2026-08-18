@@ -8,6 +8,7 @@
 #include "runtime/engine/request_memory.h"
 #include "runtime/generation/generation_budget.h"
 #include "targets/qwen3_6/export/ninfer/targets/qwen3_6/frontend.h"
+#include "core/device.h"
 
 #include <algorithm>
 #include <array>
@@ -42,7 +43,8 @@ public:
     using Clock    = std::chrono::steady_clock;
 
     ConcurrentExecutor(Instance& instance, const EngineOptions& options)
-        : instance_(instance), max_concurrency_(options.max_concurrency),
+        : instance_(instance), device_(options.device),
+          max_concurrency_(options.max_concurrency),
           max_outstanding_(static_cast<std::size_t>(options.max_concurrency) +
                            options.max_pending_requests),
           pending_timeout_(std::chrono::milliseconds(options.pending_timeout_ms)),
@@ -1088,6 +1090,10 @@ private:
     }
 
     void worker_loop() noexcept {
+        // Establish this thread's current CUDA device. CUDA runtime calls made by a thread
+        // that has never called cudaSetDevice default to device 0, which is the wrong
+        // physical GPU whenever the Engine was placed on another device via EngineOptions.
+        CUDA_CHECK(cudaSetDevice(device_));
         bool previous_unit_was_decode = false;
         for (;;) {
             {
@@ -1151,6 +1157,7 @@ private:
     }
 
     Instance& instance_;
+    const int device_;
     const std::uint32_t max_concurrency_;
     const std::size_t max_outstanding_;
     const std::chrono::milliseconds pending_timeout_;

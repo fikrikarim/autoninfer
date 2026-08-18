@@ -28,6 +28,35 @@
           }
         }
       ]
+    },
+    "ninfer-standby": {
+      "api": "openai-completions",
+      "apiKey": "unused",
+      "baseUrl": "http://127.0.0.1:8081/v1",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsStrictMode": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "qwen3.8-27b-standby",
+          "name": "Qwen3.8-27B NVFP4 (NInfer, GPU 1 standby)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 196608,
+          "maxTokens": 16384,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
     }
   }
 }

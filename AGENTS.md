@@ -338,15 +338,23 @@ live in [docs/autoninfer/README.md](docs/autoninfer/README.md); every experiment
 
 GPU ownership (two RTX 5090s):
 
-- **GPU 0 — reserved for the live `ninfer-serve`** (the harness's own model). Never bind tests,
-  benchmarks, or profilers to it, and never kill or reconfigure its process. If it dies, relaunch
-  it with the exact command recorded in `docs/autoninfer/README.md`.
+- **GPU 0 — reserved for the primary `ninfer-serve`** (the harness's own model). It is a
+  supervisor service (`ninfer-serve`, autostart/autorestart) and survives instance restarts.
+  Never bind tests, benchmarks, or profilers to it. Restarting it while a session is running is
+  only safe through the switchover: interactive sessions use the `autoninfer_standby` tool
+  (bridge onto the GPU 1 standby, restart the primary, bridge back); unattended driver sessions
+  queue `{"action":"restart-primary"}` in `/tmp/autoninfer-ops/pending.json`. Details and the
+  canonical serve flags live in `docs/autoninfer/README.md` (Serve management).
 - **GPU 1 — the research GPU.** Every test, benchmark, or profiling run targets it:
-  `CUDA_VISIBLE_DEVICES=1`, or `--device 1` for tools that accept a device flag.
+  `CUDA_VISIBLE_DEVICES=1`, or `--device 1` for tools that accept a device flag. Verify it before
+  a benchmarking session with `bash tools/gpu_health.sh 1`. It is temporarily occupied by the
+  standby serve only during a switchover.
 
 `build/` is configured with `-DNINFER_BUILD_BENCHMARKS=ON -DBUILD_TESTING=ON`; rebuild with
 `cmake --build build -j`. The project-local pi extension (`.pi/extensions/autoninfer.ts`) injects
-the live GPU/serve/git snapshot into the agent system prompt and registers `/autoninfer`.
+the live GPU/serve/git snapshot into the agent system prompt, registers `/autoninfer`, and
+registers the `autoninfer_standby` switchover tool. The unattended research loop is
+`tools/autoninfer/drive.sh` (supervisor service `autoninfer-driver`, manual start/stop).
 `models/` holds the large local prerequisite artifacts and is git-ignored.
 
 ## Commits

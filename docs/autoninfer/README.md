@@ -27,22 +27,29 @@ long-context sessions become the norm and interruptions are rare.
 | Machine | 2× NVIDIA GeForce RTX 5090 (32 GiB, `sm_120a`), CUDA 13.3 toolkit, driver 580.173.02 |
 | Repository | `/workspace/autoninfer`, branch `master`, remote `origin` (`fikrikarim/autoninfer`) |
 | Artifact | `models/qwen3_8_27b_nvfp4.ninfer` (local prerequisite, git-ignored) |
-| GPU 0 | **Reserved.** The live `ninfer-serve` runs here and saturates the GPU; that serve is the harness's own model. Never bind tests, benchmarks, or profilers to GPU 0; never kill or reconfigure its process. |
-| GPU 1 | **Research GPU.** All tests, benchmarks, and profile captures run here. Verify it before a benchmarking session: `bash tools/gpu_health.sh 1` (host-timed, high-occupancy bandwidth + compute probe; do not trust nvidia-smi counters or single-warp `clock64()` spins — see the changelog below). |
+| GPU 0 | **Reserved.** The primary `ninfer-serve` (supervisor service `ninfer-serve`) runs here and saturates the GPU; that serve is the harness's own model. Research work never binds to GPU 0. Restarting the primary is a managed operation — see [Serve management](#serve-management) below. |
+| GPU 1 | **Research GPU.** All tests, benchmarks, and profile captures run here. Verify it before a benchmarking session: `bash tools/gpu_health.sh 1` (host-timed, high-occupancy bandwidth + compute probe; do not trust nvidia-smi counters or single-warp `clock64()` spins — see the changelog below). Temporarily occupied by the standby serve only during a primary switchover (see [Serve management](#serve-management)). |
 | Build | `build/` is configured with `-DNINFER_BUILD_BENCHMARKS=ON -DBUILD_TESTING=ON`. Rebuild: `cmake --build build -j` (no numeric `-j`). |
 
-The live serve is a plain process, not a supervisor service. After an instance restart it must be
-relaunched manually:
+The live serve is supervisor-managed (service `ninfer-serve`, autostart + autorestart): after an
+instance restart it comes back on its own. The canonical flags live in
+`/opt/supervisor-scripts/ninfer-serve.sh` (repo copy: `tools/autoninfer/supervisor/`); health
+check: `supervisorctl status ninfer-serve` and `curl -s http://127.0.0.1:8080/v1/models`.
+
+**After a recycle** the container filesystem is rebuilt from the image and the supervisor files
+are gone — reconstruct the environment with:
 
 ```bash
+git clone git@github.com:fikrikarim/autoninfer.git /workspace/autoninfer
 cd /workspace/autoninfer
-setsid ./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
-  --host 127.0.0.1 --port 8080 \
-  --max-context 262144 --kv-capacity 262144 --kv-dtype int8 \
-  --max-concurrency 2 --spec mtp --draft-tokens 3 --lm-head-draft \
-  > /var/log/portal/ninfer-serve.log 2>&1 &
-ln -sfn /workspace/autoninfer/.pi/models.json /root/.pi/agent/models.json   # restore after recycle
+# restore the git-ignored model artifact (local prerequisite - restore from its source):
+#   models/qwen3_8_27b_nvfp4.ninfer
+bash tools/autoninfer/install_services.sh    # wrappers + service configs + supervisor registration
+ln -sfn /workspace/autoninfer/.pi/models.json /root/.pi/agent/models.json
 ```
+
+(The supervised primary starts immediately; it crash-loops until the model artifact is in
+place, then `supervisorctl restart ninfer-serve`.)
 
 `--kv-capacity 262144` pins the shared KV pool at 262,144 tokens — the exact size
 `--kv-capacity auto` resolved to at the previous 131,072 context ceiling, so the change costs
@@ -55,7 +62,59 @@ remains after the ~20 GiB of weights and the 1 GiB automatic headroom. The pinne
 the `contextWindow` in [`.pi/models.json`](../../.pi/models.json) must move together: the window is
 the compaction ceiling, the engine limit is the hard one.
 
-Health check: `curl -s http://127.0.0.1:8080/v1/models`.
+### Serve management
+
+Three supervisor services own the serving layer (configs in `/etc/supervisor/conf.d/`, wrappers
+in `/opt/supervisor-scripts/`):
+
+| Service | GPU | Port / model id | Lifecycle |
+|---|---|---|---|
+| `ninfer-serve` | 0 | 8080 / `qwen3.8-27b` | autostart, autorestart — the harness's model |
+| `ninfer-serve-standby` | 1 | 8081 / `qwen3.8-27b-standby` | manual — bridge serve, only during a switchover; must not be left running (occupies ~30.5 GiB of the research GPU) |
+| `autoninfer-driver` | — | — | manual — the unattended research loop (below) |
+
+**Why the standby exists:** the primary serve is the harness's own model — killing it mid-turn
+kills the agent doing the killing. A switchover therefore bridges: the session first moves onto
+the standby (GPU 1, distinct model id so misrouted requests 404 instead of silently hitting the
+wrong instance), the primary is restarted on GPU 0, then the session moves back and the standby
+stops. The whole sequence is driven by the `autoninfer_standby` tool registered by the pi
+extension (`.pi/extensions/autoninfer.ts`), which an agent can call in-turn:
+
+1. `autoninfer_standby {action: "start"}` — starts the standby (if needed, ~45 s first load),
+   waits for `/v1/models` on 8081, and switches the session's model onto it (`pi.setModel`).
+2. `supervisorctl restart ninfer-serve` via bash; poll `curl -s http://127.0.0.1:8080/v1/models`.
+3. `autoninfer_standby {action: "stop"}` — verifies the primary is healthy, switches the session
+   back, stops the standby.
+
+If a session is interrupted between `start` and `stop`, the snapshot injected into the next agent
+turn says so; the fix is to call `stop` again (or: `supervisorctl stop ninfer-serve-standby` and
+switch the model back with `/model`).
+
+**Flag changes:** to apply new serve flags, edit `/opt/supervisor-scripts/ninfer-serve.sh` (and
+keep this document in sync), then restart via one of the two paths above. Unattended
+(`autoninfer-driver`) sessions do not use the bridge — they write
+`{"action":"restart-primary"}` to `/tmp/autoninfer-ops/pending.json` and the driver applies it
+between iterations, when no driver pi process is alive (and it defers while an interactive pi
+session is running).
+
+### Unattended driver
+
+`tools/autoninfer/drive.sh` (service `autoninfer-driver`, manual start/stop) runs the research
+loop headlessly: `pi -p` iterations on a dedicated session id (`autoninfer-driver`, visible via
+`pi -r`), each iteration choosing and running one experiment per the protocol in this document,
+logging to `results.tsv`, and committing + pushing. Between iterations it applies the serve ops
+above. Log: `/var/log/autoninfer-drive.log`. Controls:
+
+```bash
+supervisorctl start autoninfer-driver     # start the loop (MAX_ITER env var caps iterations, default 24)
+supervisorctl stop autoninfer-driver      # stop after the current iteration
+ touch /tmp/autoninfer-stop               # agent-side stop (also read between iterations)
+echo '{"action":"restart-primary"}' > /tmp/autoninfer-ops/pending.json   # queue a serve restart
+```
+
+The driver's iterations and an interactive session share the primary serve (`--max-concurrency 2`
+absorbs the overlap; excess requests queue with a 30 s pending timeout). The driver stops itself
+when the primary cannot be restored after a failed op — there is no model to iterate on.
 
 ## Ground rules
 
@@ -192,3 +251,23 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
     1,467 GiB/s, 110.7 TFLOP/s. Run it before every benchmarking session (see GPU 1 row).
   - First local M1 baseline recorded: `tg128` 111.82 ± 0.07 tok/s, 27.1% MTP acceptance at HEAD
     `5a3aab20` (row 1 of `results.tsv`).
+- **2026-08-18 — fully autonomous serve management; fixed `--device` bug.**
+  - **Engine bug fix:** `ConcurrentExecutor`'s worker thread never called `cudaSetDevice`, so CUDA
+    calls on that thread defaulted to device 0. With the engine on `--device 1` (second physical
+    GPU visible to the process) the worker's first launch failed with `cudaErrorInvalidValue`
+    (cross-GPU stream/pointer mismatch). `CUDA_VISIBLE_DEVICES`-based selection masked the bug
+    because device 0 == the only visible device. Fix: the worker establishes its current device
+    from `EngineOptions.device` at `worker_loop` entry (`src/runtime/engine/concurrent_executor.h`).
+    Verified: `--device 1` serve now warms up and serves generations on GPU 1 end-to-end.
+  - Serve layer moved under supervisor (see [Serve management](#serve-management)): `ninfer-serve`
+    (GPU 0, autostart/autorestart), `ninfer-serve-standby` (GPU 1, 8081, `qwen3.8-27b-standby`,
+    manual bridge serve), `autoninfer-driver` (manual unattended loop). The primary serve now
+    survives instance restarts on its own.
+  - `autoninfer_standby` pi tool (extension): in-turn zero-gap switchover — session moves onto the
+    standby, the agent restarts the primary, the session moves back. `pi.setModel` makes the
+    mid-session model switch possible.
+  - Unattended driver (`tools/autoninfer/drive.sh`): headless `pi -p` iterations on the
+    `autoninfer-driver` session; applies serve ops from `/tmp/autoninfer-ops/pending.json`
+    between iterations only (deferred while an interactive pi session is alive); MAX_ITER cap.
+  - `.pi/models.json` now carries both provider entries (`ninfer`, `ninfer-standby`); the
+    standby's distinct model id makes misrouted requests 404 loudly.
