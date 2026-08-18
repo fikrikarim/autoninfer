@@ -190,11 +190,14 @@ while true; do
   fi
   GPU1_DOWN_SINCE=""
 
-  # 6. One iteration, fresh session, hard timeout.
+  # 6. One iteration, fresh session, hard timeout. stdin MUST be /dev/null: the
+  # supervisor child's stdin is an event pipe that never EOFs, and pi -p reads
+  # piped stdin before starting - without this it blocks forever before the first
+  # model call (observed 2026-08-18: iteration hung 10+ min with no session file).
   ITER=$((ITER + 1))
   say "=== iteration $ITER/$MAX_ITER (t+$((elapsed_min / 60))h) ==="
   sid="${SESSION_PREFIX}-${ITER}"
-  timeout -k 60 "$ITER_TIMEOUT_S" pi -p "$PROMPT" --session-id "$sid" --name "autoninfer $sid" -a >>"$LOG" 2>&1
+  timeout -k 60 "$ITER_TIMEOUT_S" pi -p "$PROMPT" --session-id "$sid" --name "autoninfer $sid" -a < /dev/null >>"$LOG" 2>&1
   rc=$?
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     say "iteration $ITER hit the ${ITER_TIMEOUT_S}s timeout (exit=$rc) - next iteration starts fresh from the handover"
