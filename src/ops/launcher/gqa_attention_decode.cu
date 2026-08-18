@@ -42,12 +42,13 @@ std::int32_t gqa_small_t_split_upper_bound(std::int32_t window) {
 
 template <typename Geometry>
 std::int32_t gqa_small_t_launch_capacity(GqaExecutionEnvelope envelope) {
-    // The committed-column partition uses the width-independent T=1 split policy
-    // (gqa_small_t_default_splits). gqa_small_t_split_upper_bound bounds that
-    // policy pointwise and is non-decreasing, so the envelope maximum is the
-    // exact maximum over every committed window the kernels may see; in
-    // particular the launch grid never clamps the committed split count below
-    // the T=1 route's own count at the same position.
+    // The per-column partition (gqa_small_t_column_split_range) uses the
+    // width-independent T=1 split policy (gqa_small_t_default_splits) at each
+    // column's own window. gqa_small_t_split_upper_bound bounds that policy
+    // pointwise and is non-decreasing, so the envelope maximum is the exact
+    // maximum over every column window the kernels may see; in particular the
+    // launch grid never clamps any column's split count below the T=1 route's
+    // own count at that column's position.
     return gqa_small_t_split_upper_bound<Geometry>(static_cast<std::int32_t>(
         envelope.max_visible_keys));
 }

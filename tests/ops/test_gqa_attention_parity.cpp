@@ -1,18 +1,20 @@
-// Bit-exact committed-column parity across the GQA small-T verify widths (the MTP
+// Bit-exact per-column parity across the GQA small-T verify widths (the MTP
 // losslessness contract for attention, model-doc 8).
 //
-// The greedy MTP emitted stream is lossless only if every committed column is a
-// finite-precision clone of the ordinary T=1 decode route. For the committed
-// (first) column of a T=2..6 verify round that means: same paged KV prefix, same
-// new key at the committed position, and the column-0 output bit-identical to a
-// width-1 decode at the same position — independent of the verify width (up to
-// the five-draft maximum), the KV dtype (I8/BF16), the window (short <=1029 vs
-// long, split/tier boundaries), and the execution envelope. Any width dependence
-// here perturbs the verify target argmax and corrupts the emitted stream
-// relative to the k=0 reference.
+// The greedy MTP emitted stream is lossless only if every column of a verify
+// round is a finite-precision clone of the ordinary T=1 decode route:
+//   * the committed column drives the emitted token, and
+//   * every draft column's target argmax drives the accept/reject decision, so
+//     a wrong draft can be accepted or a correct one rejected, and the emitted
+//     stream diverges from the k=0 reference.
+// For each column of a T=2..6 verify round that means: same paged KV prefix,
+// same new key at that column's position, and the column's output bit-identical
+// to a width-1 decode at the same position - independent of the verify width
+// (up to the five-draft maximum), the KV dtype (I8/BF16), the window (short
+// <=1029 vs long, split/tier boundaries), and the execution envelope.
 //
-// Production fidelity: the T=1 run uses the ordinary-decode profile (no valid
-// tensor, exact {W0, W0} envelope); the T=2..4 runs use the MTP-verify profile
+// Production fidelity: the T=1 runs use the ordinary-decode profile (no valid
+// tensor, exact {W0, W0} envelope); the T=2..6 runs use the MTP-verify profile
 // (device valid-columns tensor, {1, W_T} envelope), exactly as TextContext::
 // target_verify_batch drives gqa_attention.
 
@@ -432,16 +434,19 @@ struct Report {
 
 const char* cache_name(DType dtype) { return dtype == DType::BF16 ? "bf16" : "int8-g64"; }
 
-// Runs one width against the shared cache/inputs (token 0 = the committed column)
-// and returns the committed token-0 output: q_heads x head_dim BF16 bits.
-std::vector<std::uint16_t> run_width(DType dtype, DeviceCache& cache,
-                                     std::uint32_t seed, std::int32_t base, std::int32_t width,
-                                     bool masked) {
+// Runs one width against the shared cache/inputs. Input token t of the run is
+// global token (token_offset + t) at position (position_base + t); returns all
+// `width` output columns: q_heads x head_dim BF16 bits each.
+std::vector<std::uint16_t> run_width(DType dtype, DeviceCache& cache, std::uint32_t seed,
+                                     std::int32_t position_base, std::int32_t width,
+                                     std::int32_t token_offset, bool masked) {
     const std::int32_t q_heads  = kGeometry.q_heads;
     const std::int32_t kv_heads = kGeometry.kv_heads;
     constexpr std::int32_t kMaxWidth = 6; // committed column + five draft columns
 
-    // Shared represented inputs: token 0 is the committed column for every width.
+    // Shared represented inputs (kMaxWidth global tokens); the run consumes the
+    // [token_offset, token_offset + width) slice, so every width of one case
+    // shares the same prefix + token sequence.
     std::vector<std::uint16_t> q_bits = to_bf16_bits(
         make_bf16_values(static_cast<std::size_t>(kHeadDim) * q_heads * kMaxWidth, seed, -0.25f,
                          0.25f));
@@ -452,8 +457,8 @@ std::vector<std::uint16_t> run_width(DType dtype, DeviceCache& cache,
         make_bf16_values(static_cast<std::size_t>(kHeadDim) * kv_heads * kMaxWidth, seed + 2u,
                          -1.0f, 1.0f));
 
-    const std::int32_t committed_window = base + 1;
-    const std::int32_t full_window      = base + width;
+    const std::int32_t committed_window = position_base + 1;
+    const std::int32_t full_window      = position_base + width;
     // Production profiles: T=1 decode is exact-envelope and unmasked; T>1 verify
     // is {1, W_T}-enveloped with a device valid-columns tensor.
     const ops::GqaExecutionEnvelope envelope =
@@ -461,15 +466,26 @@ std::vector<std::uint16_t> run_width(DType dtype, DeviceCache& cache,
                : ops::GqaExecutionEnvelope{static_cast<std::uint32_t>(committed_window),
                                            static_cast<std::uint32_t>(committed_window)};
 
-    GuardedDeviceBuffer dq(q_bits.size() * sizeof(std::uint16_t));
-    GuardedDeviceBuffer dk(k_bits.size() * sizeof(std::uint16_t));
-    GuardedDeviceBuffer dv(v_bits.size() * sizeof(std::uint16_t));
-    dq.copy_from_host(q_bits.data(), q_bits.size() * sizeof(std::uint16_t));
-    dk.copy_from_host(k_bits.data(), k_bits.size() * sizeof(std::uint16_t));
-    dv.copy_from_host(v_bits.data(), v_bits.size() * sizeof(std::uint16_t));
+    const std::size_t q_elems  =
+        static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(q_heads);
+    const std::size_t kv_elems =
+        static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kv_heads);
+    const std::size_t q_off  = static_cast<std::size_t>(token_offset) * q_elems;
+    const std::size_t kv_off = static_cast<std::size_t>(token_offset) * kv_elems;
+    const std::size_t q_slice  = static_cast<std::size_t>(width) * q_elems;
+    const std::size_t kv_slice = static_cast<std::size_t>(width) * kv_elems;
+
+    GuardedDeviceBuffer dq(q_slice * sizeof(std::uint16_t));
+    GuardedDeviceBuffer dk(kv_slice * sizeof(std::uint16_t));
+    GuardedDeviceBuffer dv(kv_slice * sizeof(std::uint16_t));
+    dq.copy_from_host(q_bits.data() + q_off, q_slice * sizeof(std::uint16_t));
+    dk.copy_from_host(k_bits.data() + kv_off, kv_slice * sizeof(std::uint16_t));
+    dv.copy_from_host(v_bits.data() + kv_off, kv_slice * sizeof(std::uint16_t));
 
     std::vector<std::int32_t> positions(static_cast<std::size_t>(width));
-    for (std::int32_t t = 0; t < width; ++t) { positions[static_cast<std::size_t>(t)] = base + t; }
+    for (std::int32_t t = 0; t < width; ++t) {
+        positions[static_cast<std::size_t>(t)] = position_base + t;
+    }
     GuardedDeviceBuffer dp(positions.size() * sizeof(std::int32_t));
     dp.copy_from_host(positions.data(), positions.size() * sizeof(std::int32_t));
 
@@ -507,10 +523,7 @@ std::vector<std::uint16_t> run_width(DType dtype, DeviceCache& cache,
                        workspace, tout, nullptr);
     cuda_synchronize();
 
-    const auto out_bits = copy_from_guarded<std::uint16_t>(dout, out_elements);
-    const std::size_t column_elements =
-        static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(q_heads);
-    return std::vector<std::uint16_t>(out_bits.begin(), out_bits.begin() + column_elements);
+    return copy_from_guarded<std::uint16_t>(dout, out_elements);
 }
 
 struct ParityCase {
@@ -519,20 +532,41 @@ struct ParityCase {
 };
 
 int run_dtype(DType dtype, const std::vector<ParityCase>& cases, Report& report) {
-    int failures = 0;    for (const ParityCase& test_case : cases) {
-        const std::int32_t max_context = align_up_page(test_case.base + 4);
+    int failures = 0;
+    for (const ParityCase& test_case : cases) {
+        // Covers the last draft position (base + 5) plus one key of slack.
+        const std::int32_t max_context = align_up_page(test_case.base + 6);
         const HostCache initial =
             make_cache(kGeometry, dtype, max_context, test_case.seed + 10u);
         DeviceCache cache(initial);
 
         const std::string tag = std::string(cache_name(dtype)) + " base=" +
                                 std::to_string(test_case.base);
-        const std::vector<std::uint16_t> ref = run_width(dtype, cache, test_case.seed,
-                                                         test_case.base, 1, /*masked=*/false);
+
+        // T=1 decode references: global token j at position base + j, for every
+        // column the verify widths may commit or draft.
+        std::vector<std::vector<std::uint16_t>> refs(6);
+        for (std::int32_t j = 0; j < 6; ++j) {
+            refs[j] = run_width(dtype, cache, test_case.seed, test_case.base + j, 1, j,
+                                /*masked=*/false);
+        }
+        // Every verify width, every column (committed and draft): the column's
+        // output must bit-equal the T=1 decode at that column's position.
         for (std::int32_t width = 2; width <= 6; ++width) {
             const std::vector<std::uint16_t> got =
-                run_width(dtype, cache, test_case.seed, test_case.base, width, /*masked=*/true);
-            report.compare_column("parity(" + tag + " T=" + std::to_string(width) + ")", ref, got);
+                run_width(dtype, cache, test_case.seed, test_case.base, width, 0,
+                          /*masked=*/true);
+            const std::size_t column_elements =
+                static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kGeometry.q_heads);
+            for (std::int32_t column = 0; column < width; ++column) {
+                const std::vector<std::uint16_t> column_bits(
+                    got.begin() + static_cast<std::size_t>(column) * column_elements,
+                    got.begin() + static_cast<std::size_t>(column + 1) * column_elements);
+                report.compare_column(
+                    "parity(" + tag + " T=" + std::to_string(width) + " col=" +
+                        std::to_string(column) + ")",
+                    refs[column], column_bits);
+            }
         }
         failures += cache.verify_guards("parity(" + tag + ")");
     }
@@ -570,6 +604,6 @@ int main() {
     run_dtype(DType::BF16, cases, report);
 
     std::cout << (report.failures == 0 ? "OK" : "FAIL")
-              << " gqa attention committed-column parity\n";
+              << " gqa attention per-column parity (committed + draft)\n";
     return report.failures == 0 ? 0 : 1;
 }

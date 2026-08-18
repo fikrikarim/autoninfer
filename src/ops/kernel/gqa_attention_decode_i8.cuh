@@ -113,6 +113,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     __shared__ __align__(16) __half k_scale_s[Bc * Groups];
     __shared__ __align__(16) __half v_scale_s[Bc * Groups];
     __shared__ std::int32_t physical_pages_s[PageIds];
+    __shared__ std::int32_t column_range_s[2 * 6]; // per-column {start, end} T=1 partition
 
     const int kv_head     = static_cast<int>(blockIdx.x);
     const int split       = static_cast<int>(blockIdx.y);
@@ -182,22 +183,38 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         return;
     }
 
-    // Committed-column partition (gqa_small_t_split_range): the first column's
-    // window is split exactly as a T=1 decode would split it, and the draft
-    // columns' own keys extend the owning split to the full verify window.
-    const GqaSmallTSplitRange range =
-        gqa_small_t_split_range<Geometry, Bc>(first_pos + 1, last_pos + 1, split, split_count);
-    if (range.start < 0) { return; }
-    const int split_start = range.start;
-    const int split_end   = range.end;
-    if (split_start >= split_end) {
-        write_neutral();
-        return;
+    // Per-column partition (gqa_small_t_column_split_range): every column's
+    // window is split exactly as a T=1 decode would split it at that column's
+    // own window, so each column bit-clones the width-1 route (MTP
+    // losslessness, model-doc 8). The CTA stages the union of the columns'
+    // split ranges; keys outside a column's own range stay masked for that
+    // column (score -inf -> p = 0, alpha = 1), a numerical no-op.
+    for (int t = tid; t < TokenTile; t += Threads) {
+        const GqaSmallTSplitRange r =
+            gqa_small_t_column_split_range<Geometry, Bc>(pos[t] + 1, split, split_count);
+        column_range_s[2 * t]     = r.start;
+        column_range_s[2 * t + 1] = r.end;
     }
-    const int first_tile = (split_start / Bc) * Bc;
-    const int key_blocks = div_up(split_end - first_tile, Bc);
-    const int first_page = first_tile >> kPagedKVPageShift;
-    const int page_count = ((split_end - 1) >> kPagedKVPageShift) - first_page + 1;
+    __syncthreads();
+    int union_start = 0x7fffffff, union_end = -1;
+    for (int t = 0; t < TokenTile; ++t) {
+        const int rs = column_range_s[2 * t];
+        if (rs >= 0) {
+            union_start = rs < union_start ? rs : union_start;
+            union_end   = column_range_s[2 * t + 1] > union_end ? column_range_s[2 * t + 1]
+                                                                : union_end;
+        }
+    }
+    // A valid partition chunk is always non-empty; no valid chunk means this
+    // split exceeds every column's active count, and the reducer reads none of
+    // this CTA's partials for any column.
+    if (union_end < 0) { return; }
+    const int split_start = union_start;
+    const int split_end   = union_end;
+    const int first_tile  = (split_start / Bc) * Bc;
+    const int key_blocks  = div_up(split_end - first_tile, Bc);
+    const int first_page  = first_tile >> kPagedKVPageShift;
+    const int page_count  = ((split_end - 1) >> kPagedKVPageShift) - first_page + 1;
     for (int page = tid; page < page_count; page += Threads) {
         physical_pages_s[page] = block_table[first_page + page];
     }
@@ -208,7 +225,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             const int token    = pair / Groups;
             const int grp      = pair - token * Groups;
             const int position = pos[token];
-            if (position < split_start || position >= split_end) { continue; }
+            const int r_start  = column_range_s[2 * token];
+            if (r_start < 0 || position < r_start ||
+                position >= column_range_s[2 * token + 1]) { continue; }
             int physical_page       = lane == 0 ? paged_kv_physical_page(block_table, position) : 0;
             const int page_offset   = position & kPagedKVPageMask;
             const int d0            = grp * kGqaKvQuantGroup + lane;
@@ -299,6 +318,26 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         }
     }
     __syncthreads();
+
+    // Per-row column range for the producer (fixed across the key loop): each
+    // producer row scores only the keys of its own column's T=1 partition; all
+    // other keys are masked below, a no-op for that column.
+    int p_range_start0 = -1, p_range_end0 = -1, p_range_start1 = -1, p_range_end1 = -1;
+    if (warp < RowTiles) {
+        const int pr0 = warp * 16 + gid;
+        const int pr1 = pr0 + 8;
+        int qh0 = 0, tok0 = 0, qh1 = 0, tok1 = 0;
+        gqa_small_t_tc_row_to_qt<Geometry>(pr0, TokenTile, kv_head, qh0, tok0);
+        gqa_small_t_tc_row_to_qt<Geometry>(pr1, TokenTile, kv_head, qh1, tok1);
+        if (pr0 < RowCount) {
+            p_range_start0 = column_range_s[2 * tok0];
+            p_range_end0   = column_range_s[2 * tok0 + 1];
+        }
+        if (pr1 < RowCount) {
+            p_range_start1 = column_range_s[2 * tok1];
+            p_range_end1   = column_range_s[2 * tok1 + 1];
+        }
+    }
 
     float acc[PVNtPerWarp][4];
 #pragma unroll
@@ -426,19 +465,23 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                 const int key0 = k0 + col0;
                 const int key1 = k0 + col1;
                 score[nt][0] =
-                    (row0 < RowCount && key0 >= split_start && key0 < split_end && key0 <= qabs0)
+                    (row0 < RowCount && key0 >= p_range_start0 && key0 < p_range_end0 &&
+                     key0 <= qabs0)
                         ? score[nt][0] * scale
                         : -CUDART_INF_F;
                 score[nt][1] =
-                    (row0 < RowCount && key1 >= split_start && key1 < split_end && key1 <= qabs0)
+                    (row0 < RowCount && key1 >= p_range_start0 && key1 < p_range_end0 &&
+                     key1 <= qabs0)
                         ? score[nt][1] * scale
                         : -CUDART_INF_F;
                 score[nt][2] =
-                    (row1 < RowCount && key0 >= split_start && key0 < split_end && key0 <= qabs1)
+                    (row1 < RowCount && key0 >= p_range_start1 && key0 < p_range_end1 &&
+                     key0 <= qabs1)
                         ? score[nt][2] * scale
                         : -CUDART_INF_F;
                 score[nt][3] =
-                    (row1 < RowCount && key1 >= split_start && key1 < split_end && key1 <= qabs1)
+                    (row1 < RowCount && key1 >= p_range_start1 && key1 < p_range_end1 &&
+                     key1 <= qabs1)
                         ? score[nt][3] * scale
                         : -CUDART_INF_F;
                 bm0 = fmaxf(bm0, fmaxf(score[nt][0], score[nt][1]));

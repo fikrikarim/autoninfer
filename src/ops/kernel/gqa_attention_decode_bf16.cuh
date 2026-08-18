@@ -46,6 +46,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
     __shared__ __align__(16) __nv_bfloat16 qkv_s[QkvRows * D];
     __shared__ __align__(16) __nv_bfloat16 p_s[Wc * 16 * Bc];
     __shared__ std::int32_t physical_pages_s[PageIds];
+    __shared__ std::int32_t column_range_s[2 * 6]; // per-column {start, end} T=1 partition
     __nv_bfloat16* k_s = qkv_s;
     __nv_bfloat16* v_s = qkv_s + Bc * D;
 
@@ -121,22 +122,38 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         return;
     }
 
-    // Committed-column partition (gqa_small_t_split_range): the first column's
-    // window is split exactly as a T=1 decode would split it, and the draft
-    // columns' own keys extend the owning split to the full verify window.
-    const GqaSmallTSplitRange range =
-        gqa_small_t_split_range<Geometry, Bc>(first_pos + 1, last_pos + 1, split, split_count);
-    if (range.start < 0) { return; }
-    const int split_start = range.start;
-    const int split_end   = range.end;
-    if (split_start >= split_end) {
-        write_neutral();
-        return;
+    // Per-column partition (gqa_small_t_column_split_range): every column's
+    // window is split exactly as a T=1 decode would split it at that column's
+    // own window, so each column bit-clones the width-1 route (MTP
+    // losslessness, model-doc 8). The CTA stages the union of the columns'
+    // split ranges; keys outside a column's own range stay masked for that
+    // column (score -inf -> p = 0, alpha = 1), a numerical no-op.
+    for (int t = tid; t < tokens; t += Threads) {
+        const GqaSmallTSplitRange r =
+            gqa_small_t_column_split_range<Geometry, Bc>(pos[t] + 1, split, split_count);
+        column_range_s[2 * t]     = r.start;
+        column_range_s[2 * t + 1] = r.end;
     }
-    const int first_tile = (split_start / Bc) * Bc;
-    const int key_blocks = div_up(split_end - first_tile, Bc);
-    const int first_page = first_tile >> kPagedKVPageShift;
-    const int page_count = ((split_end - 1) >> kPagedKVPageShift) - first_page + 1;
+    __syncthreads();
+    int union_start = 0x7fffffff, union_end = -1;
+    for (int t = 0; t < tokens; ++t) {
+        const int rs = column_range_s[2 * t];
+        if (rs >= 0) {
+            union_start = rs < union_start ? rs : union_start;
+            union_end   = column_range_s[2 * t + 1] > union_end ? column_range_s[2 * t + 1]
+                                                                : union_end;
+        }
+    }
+    // A valid partition chunk is always non-empty; no valid chunk means this
+    // split exceeds every column's active count, and the reducer reads none of
+    // this CTA's partials for any column.
+    if (union_end < 0) { return; }
+    const int split_start = union_start;
+    const int split_end   = union_end;
+    const int first_tile  = (split_start / Bc) * Bc;
+    const int key_blocks  = div_up(split_end - first_tile, Bc);
+    const int first_page  = first_tile >> kPagedKVPageShift;
+    const int page_count  = ((split_end - 1) >> kPagedKVPageShift) - first_page + 1;
     for (int page = tid; page < page_count; page += Threads) {
         physical_pages_s[page] = block_table[first_page + page];
     }
@@ -148,7 +165,9 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
             const int token = chunk / (D / 8);
             const int d     = (chunk - token * (D / 8)) * 8;
             const int p_tok = pos[token];
-            if (p_tok >= split_start && p_tok < split_end && p_tok >= 0 &&
+            const int r_start = column_range_s[2 * token];
+            if (r_start >= 0 && p_tok >= r_start &&
+                p_tok < column_range_s[2 * token + 1] && p_tok >= 0 &&
                 p_tok < logical_capacity) {
                 const std::int64_t new_off = gqa_kv_new_index<Geometry>(kv_head, d, token);
                 const int lane             = tid & 31;
@@ -189,6 +208,26 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
 
     const int warp_row0 = warp * 16;
     __nv_bfloat16* p_sw = &p_s[warp * 16 * Bc];
+
+    // Per-row column range (fixed across the key loop): each row scores only
+    // the keys of its own column's T=1 partition; all other keys are masked
+    // below, a no-op for that column.
+    int range_start0 = -1, range_end0 = -1, range_start1 = -1, range_end1 = -1;
+    {
+        const int row0 = warp_row0 + gid;
+        const int row1 = row0 + 8;
+        int qh0 = 0, tok0 = 0, qh1 = 0, tok1 = 0;
+        gqa_small_t_tc_row_to_qt<Geometry>(row0, tokens, kv_head, qh0, tok0);
+        gqa_small_t_tc_row_to_qt<Geometry>(row1, tokens, kv_head, qh1, tok1);
+        if (row0 < row_count) {
+            range_start0 = column_range_s[2 * tok0];
+            range_end0   = column_range_s[2 * tok0 + 1];
+        }
+        if (row1 < row_count) {
+            range_start1 = column_range_s[2 * tok1];
+            range_end1   = column_range_s[2 * tok1 + 1];
+        }
+    }
 
     unsigned af_q[QKKs][4];
 #pragma unroll
@@ -284,19 +323,19 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
             const int key0 = k0 + col0;
             const int key1 = col1 + k0;
             score[nt][0] =
-                (row0 < row_count && key0 >= split_start && key0 < split_end && key0 <= qabs0)
+                (row0 < row_count && key0 >= range_start0 && key0 < range_end0 && key0 <= qabs0)
                     ? score[nt][0] * scale
                     : -CUDART_INF_F;
             score[nt][1] =
-                (row0 < row_count && key1 >= split_start && key1 < split_end && key1 <= qabs0)
+                (row0 < row_count && key1 >= range_start0 && key1 < range_end0 && key1 <= qabs0)
                     ? score[nt][1] * scale
                     : -CUDART_INF_F;
             score[nt][2] =
-                (row1 < row_count && key0 >= split_start && key0 < split_end && key0 <= qabs1)
+                (row1 < row_count && key0 >= range_start1 && key0 < range_end1 && key0 <= qabs1)
                     ? score[nt][2] * scale
                     : -CUDART_INF_F;
             score[nt][3] =
-                (row1 < row_count && key1 >= split_start && key1 < split_end && key1 <= qabs1)
+                (row1 < row_count && key1 >= range_start1 && key1 < range_end1 && key1 <= qabs1)
                     ? score[nt][3] * scale
                     : -CUDART_INF_F;
             bm0 = fmaxf(bm0, fmaxf(score[nt][0], score[nt][1]));
