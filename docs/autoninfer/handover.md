@@ -1,7 +1,46 @@
 # Autoninfer handover
 
-**Last updated:** 2026-08-18 ~17:26 UTC by unattended driver session `autoninfer-driver-9` (iteration 9/400).
-**Experiment this iteration: k0@136 canonical-flip diagnosis (gdn-gating fix re-land decision). Outcome: DISCARD confirmed, root cause localized to the GDN state pool — not the prefill forward.**
+**Last updated:** 2026-08-18 ~17:45 UTC by the user's interactive session (driver restarted with the new protocol).
+**State change since iteration 9: the losslessness chain hit the step-back rule - a forced re-rank is due, and a product decision is filed in BLOCKERS.md. Step 0 every iteration: `bash tools/autoninfer/bg.sh check`.**
+
+## Protocol changes now in force (2026-08-18 17:45, commit 73a3f507)
+- **Step 0:** `bash tools/autoninfer/bg.sh check` - every iteration starts here; STALE job (no progress 15 min) -> restart once + record, then BLOCKERS.
+- **Progress invariant:** an iteration ends with a result (results.tsv row, committed change, or recorded decision); max 2 consecutive analysis-only iterations.
+- **Proceed-vs-yield:** a chain re-ranks after a discard / falsification / 3rd analysis-only iteration (5-min cost-benefit vs top backlog item; yield recorded in the handover; closing a series or changing a canonical config = product decision -> BLOCKERS).
+- **Serve deferral is activity-based:** `restart-primary` now applies while interactive sessions are IDLE (in-flight socket / serve-log growth = busy). It is queued and should apply on its own soon - verify with `supervisorctl status ninfer-serve` + `curl -s http://127.0.0.1:8080/v1/models`; the new serve has `--pending-timeout-ms 300000`. Do NOT re-queue.
+
+## HEAD & state
+- **HEAD:** `73a3f507`. **Tree is DIRTY with iteration 14's orphaned WIP** (its session was killed at 17:40 by the driver restart): the handover step-1 raw-rx dump tap - 3 files, +301 lines, env-gated (`NINFER_TAP_LOGITS`, `NINFER_TAP_STATE_DUMP`, `NINFER_TAP_POOL_DUMP`, `NINFER_TAP_LAYERS_LO/HI`), self-marked TEMP/strip-before-commit; mtimes 16:50-16:57; `build/` binaries are 16:57 (may contain the tap - inert without env vars). Per the concurrent-session rule: owner gone -> take over (it is YOUR planned step 1, verbatim) or stash it with a message; do not silently delete.
+- **Baseline M1 (keep/discard reference, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (k=3, 201 rounds, committed-source binary, 82ef8337).
+- **DSpark weights download (architectural lane, backlog #1):** `models/dspark/model.safetensors` = 1.19/2.55 GiB at 17:45, resuming via `hf-mirror.com` (huggingface.co is egress-blocked), registered in the bg ledger (`bg.sh check` shows it). Resume command if it dies: `curl -sSL -C - -o models/dspark/model.safetensors "https://hf-mirror.com/RadixArk/Qwen3.8-27B-DSpark/resolve/main/model.safetensors"` (setsid + `bg.sh add dspark-weights models/dspark/model.safetensors`). Meta files (config.json, dspark.py, dflash.py) already at `models/dspark/`.
+- GPU 1 HEALTHY at 17:33 (triad 1466.6 GiB/s, FMA 110.69 TFLOP/s). All GPU work on GPU 1.
+- `git stash list` still has the tap stash from iteration 9 (`stash@{0}`; fixed-tap diff also at `/tmp/tap_fixed_full.diff`).
+
+## The losslessness chain is at a YIELD POINT (step-back rule triggered)
+The chain: 82ef8337 (attribution: gdn_gating_proj committed-column) -> 912dd5cb (fix DISCARDED: moves k0 canonical) -> 5d4d6298 (k0@136 diagnosis: GDN state-pool rx anomaly, arena hypothesis falsified) -> iter 14 (rx dump tap, orphaned above). That is 3 analysis-only iterations on a chain whose last fix was DISCARDED. **Under the new progress invariant the re-rank is MANDATORY this iteration.** The two candidates:
+1. **Finish the rx anomaly** (one more iteration: dump + state-pool code read): even if fixed, it re-lands the gdn-gating clone which MOVED the k0 canonical - i.e. the chain's end state is a defect found, not a kept fix. Expected M1 delta ~0 (the clone's +1.8% was already discarded).
+2. **Yield to DSpark (backlog #1)**: the architectural bet (claimed 3.07-3.28 accepted/step vs MTP ~1.97 expected tok/round), downloads already flowing, pipeline ready (`EXPERIMENT_FIT=1`, `EXPERIMENT_WEIGHTS`, `GATE_SPEC_ARGS`).
+**The deeper issue is a PRODUCT DECISION, filed in BLOCKERS.md for the user:** the k>0 residual (single-token near-tie flips, reconvergent, clearly-correct; k0 canonical bit-exact) is a property of the quantized BF16 target under batched verify - it applies to ANY speculator. Ratifying "accept the near-tie class" closes the losslessness series, stops the M1 bleed (130.13 -> 113.2, ~13% paid for bit-exact verify), and makes DSpark the loop's commitment. Until the user decides, default to yielding to DSpark (the measurement is the deliverable; the ratification row already exists).
+
+## Next iteration (in order)
+1. `bash tools/autoninfer/bg.sh check` (dspark-weights should be advancing).
+2. Handle the orphaned tap WIP (take over = continue iteration 9's plan step 1; or `git stash push -m "iter-14 rx dump tap (orphaned)"` and yield straight to DSpark).
+3. **If yielding (default):** the DSpark experiment is multi-iteration - this iteration should produce its first RESULT: either the converter's first artifact section (tools/convert/qwen3_6_27b/dspark.py ingesting the HF safetensors, pattern: 35B `dflash/` section, doc `docs/maintainer/qwen3.6-35b-a3b-model.md` S9) once the download completes, or - if the download is still going - the draft-GQA op contract + persistent draft-KV arena design as a committed doc under docs/maintainer (that is a committed change = a result). Full H6 analysis: docs/autoninfer/inspiration.md H6. Fit rule (Ground rule 9): `EXPERIMENT_FIT=1`, matched-context comparison, product adoption = BLOCKERS ratification.
+4. **If finishing the rx anomaly instead:** iteration 9's plan step 1 (raw rx dump via the WIP tap, both binaries) + step 2 (state-pool zero-init/write-coverage read) in one iteration; a fix that still moves k0 canonical stays discarded - file the defect in BLOCKERS as a product decision instead.
+
+## Do not repeat / do not touch
+- Do not re-derive the ruled-out losslessness paths (committed columns of all 3 linear/attention families, GDN fold, KV write, accept kernel, arena layout - all op-verified or empirically falsified). The open chain is the GDN state pool rx only.
+- Do not flip canonical to k=2 (post-fix k=2 ~= k=3, 0ab130b8). Cross-k tok/s A/B is only valid at lossless streams.
+- The pre-17:45 handover's "serve deferred while interactive sessions alive" note is SUPERSEDED (activity-based deferral now; see above).
+- Never restart/touch the GPU 0 serve manually (pid 21537 until the op swaps it); never start/leave the standby serve; never commit `.env` or `models/`.
+- GPU 1: `bash tools/gpu_health.sh 1` before any benchmark.
+- 35B-A3B / 27B groupwise-int artifacts absent locally (models/ has only qwen3_8_27b_nvfp4.ninfer + the dspark/ draft repo).
+- Scratch (lost on reboot): /tmp/wt (worktree f2dbd156: gdn-gating fix), /tmp/tap_fixed_full.diff, /tmp/it9_p*.json (AIME prefixes), /tmp/base_k0.err (canonical k0), /tmp/aime_ab.sh, /tmp/rat_aime*.sh, /tmp/qgate_diff.sh.
+
+---
+
+# (Superseded) Iteration 9 handover
+
 
 ## HEAD & state
 - **HEAD:** `7ab7b4da` + this iteration's docs commit (results row + handover; nothing else). Tree clean. `git stash list` has **one entry** (see below).
