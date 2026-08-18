@@ -12,8 +12,7 @@ blocker needs nothing from you.
 
 | date (UTC) | blocker | needed action | state |
 |---|---|---|---|
-
-*(none — loop is running)*
+| 2026-08-18 12:50 | MTP stream residual vs pure greedy (k=0): after the committed-column bit-clone fix (e84ddaef, kept as a correctness fix, M1 +13.8%), the k=3 gate stream still differs from k=0 on 4/8 prompts within 256 tok (AIME k=1: single near-tie token flip at idx 119, 280 vs 343, reconverges 7 tok later). This exceeds the quality policy's small-diff threshold (2/8). Mechanism attribution (verify draft-column near-tie argmax vs a residual committed-column defect) is the next iteration's step 3. | Ratify keeping MTP at k=3 with this measured residual (north-star speed; the committed column is now exactly the canonical greedy computation), or direct the next step (e.g. per-column T=1 partition for draft columns where tier-safe). | open — next iteration localizes the mechanism |
 
 ## Resolved
 
