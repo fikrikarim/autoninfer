@@ -89,13 +89,25 @@ Seeded 2026-08-18 ~09:15 UTC by the interactive session.
 
 ## H6 — DSpark speculator (architectural lane, 2026-08-18)
 
-- **DSpark** (RadixArk, HF model card, read 2026-08-18): <https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark>
+- **DSpark** (RadixArk, HF model card + `config.json` + `dspark.py` read 2026-08-18 via
+  hf-mirror.com): <https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark>
   A DSpark speculator for Qwen3.8-27B: "extends DFlash with target-model auxiliary features and a
   confidence head that dynamically chooses the number of draft tokens" (trained with SpecForge,
   served with SGLang `--speculative-algorithm DSPARK`). Facts: 1.36B params BF16 (2.72 GB),
   hidden 5120, **5 full-attention GQA layers** (40 Q / 8 KV heads), target auxiliary feature taps
   at target layers **4, 16, 28, 40, 52**, confidence head (vanilla Markov, rank 256), block size
-  **7 draft tokens** (verify width 8), max position 262144. Claimed acceptance length (mean tokens
+  **7 draft tokens** (verify width 8), max position 262144. **Verified from the model code
+  (`dspark.py`, 7 KB full reference implementation, mirrored at `models/dspark/`):** the
+  backbone is SpecForge's DFlash block-diffusion drafter with **standard causal full attention**
+  (NOT the 35B DFlash's non-causal masked local attention) — so it needs a PERSISTENT draft KV
+  cache; **YaRN RoPE** (factor 32, original_max 8192, theta 1e7); **no own token embedding**
+  (uses the target's — saves ~2.5 GiB and matches NInfer's target-owned prepared prompt);
+  context projection is `fc` over the 5 aux taps concat (25,600 → 5,120 ≈ 262 MB); **Markov
+  head** = low-rank bigram bias on the draft logits: `w1` embedding [248,320 × 256] + `w2`
+  linear [256 → 248,320], no bias (≈ 250 MB), applied as `logits + w2(w1[prev_token])`;
+  **confidence head** = one linear [hidden (+rank if with_markov) → 1] per position
+  (AcceptRatePredictor). Param budget checks: 5 layers ≈ 845 M + fc 262 M + markov 250 M ≈
+  1.36 B ✓. Mask token 248,077; block 7. Claimed acceptance length (mean tokens
   accepted per verify step, incl. bonus; FP8 target, temp 0.6 / top-k 20 / top-p 0.95, thinking
   on, 2048 tokens): AIME 2026 **3.07**, AIME 2025 **3.28**, HumanEval 3.47, GSM8K 4.57,
   MT-Bench 3.10; macro mean 3.35 over 11 workloads (1,164 requests). SGLang serve line: TP1, FP8
@@ -137,9 +149,11 @@ Seeded 2026-08-18 ~09:15 UTC by the interactive session.
   spec backend / artifact identity for the 27B target is a product-identity change → BLOCKERS
   ratification after measurement.
 - **Open practical question:** huggingface.co is not directly reachable from this instance
-  (HTTP 000; github.com is 200) — the 2.72 GB draft download needs a working egress route
-  (proxy env, mirror, or box-to-box copy). Check `env | grep -i proxy` first; if none, ask the
-  user to drop the repo into `models/` (it is small enough for that).
+  (HTTP 000; github.com is 200) — **RESOLVED 2026-08-18: `hf-mirror.com` works** (API +
+  resolve + range requests, no proxy needed). Meta files (`config.json`, `dspark.py`,
+  `dflash.py`) are already mirrored at `models/dspark/`; the 2.72 GB `model.safetensors`
+  download is the remaining step (range-capable → resumable; `models/` is git-ignored, do not
+  push it).
 
 ## Standing method notes
 
