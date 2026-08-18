@@ -151,7 +151,25 @@ would contend without adding throughput.
 4. **One hypothesis per commit.** Commit before measuring; the results row references the commit.
 5. **Record everything.** Every experiment — keep, discard, or crash — gets a `results.tsv` row.
 6. **Push cadence.** Push after every kept change (and after informative discards), so progress
-   survives an instance recycle. Never push `models/` or `build/`.
+   survives an instance recycle. Never push `models/` or `build/` (and never `.env` — git-ignored,
+   holds the EXA key).
+7. **Quality policy (user rule, 2026-08-18): the north star is maximum speed; a small MEASURED
+   quality degradation is acceptable when it buys a large speedup** (the user explicitly accepts
+   e.g. BF16→NVFP4-style tradeoffs). Quantify with the quality gate, never assume:
+   `tools/autoninfer/quality_gate.sh <label>` greedy-decodes 8 fixed prompts on a temporary GPU 1
+   serve (MTP path enabled) and hashes the outputs per prompt. Pure perf/schedule changes must be
+   token-identical (zero hash diff). Numerics-changing changes keep only when the M1 gain is ≥5%
+   *and* the diff is small (≤2/8 prompts changed, changed outputs still clearly correct); the diff
+   is recorded in the `results.tsv` row. Large degradation (≥3/8 or a behavioral collapse) is a
+   discard — unless the speedup is >20%, in which case the measurement is kept and a row is added
+   to `BLOCKERS.md` for the user to ratify the tradeoff. External-protocol changes additionally
+   need the schema/parity checks (the gate covers token quality only). Baseline at HEAD `fb49a024`
+   (docs-only since; binary unchanged): overall hash `d5d80c0211e7e33b`.
+8. **Web research.** `tools/autoninfer/exa_search.sh "<query>" [n]` and
+   `tools/autoninfer/exa_content.sh <url>` (EXA API; key in the git-ignored `.env`). Use them when
+   choosing a new hypothesis, when stuck, or when a result is surprising — at most ~2 searches per
+   iteration, ≤10 minutes. Actionable findings are appended to
+   [inspiration.md](inspiration.md) (deduped; one entry: source + concrete NInfer idea).
 
 ## The loop
 
@@ -239,7 +257,22 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
 
 ## Changelog (autoninfer setup)
 
-- **2026-08-18 — MTP head A/B measured; full head discarded (M1 regression).**
+- **2026-08-18 — quality policy relaxed (user rule) + web research added to the loop.**
+  - **Quality policy (Ground rules 7):** north star is maximum speed; a small *measured*
+    quality degradation is acceptable for a large speedup (user explicitly accepts
+    BF16→NVFP4-class tradeoffs). Quantified, never assumed:
+    `tools/autoninfer/quality_gate.sh <label>` (temporary greedy serve on GPU 1, 8 fixed prompts,
+    per-prompt token hashes; baseline overall hash `d5d80c0211e7e33b` at the current binary).
+    Pure perf changes: token-identical required. Numerics changes: keep at ≥5% M1 gain + small
+    diff (≤2/8 prompts); large degradation → discard or BLOCKERS for user ratification at >20%
+    speedup.
+  - **Web research (Ground rules 8):** EXA API tooling `tools/autoninfer/exa_search.sh` /
+    `exa_content.sh` (key in git-ignored `.env`); the loop searches when choosing a hypothesis or
+    when stuck (≤2 searches/iteration) and curates findings in
+    [inspiration.md](inspiration.md) (seeded with MTP-acceptance, NVFP4/SM120 GEMM, GDN kernel,
+    and SM120 flash-decoding leads).
+  - `results.tsv` now has a first loop row (MTP head A/B, full head discarded, M1 regression) —
+    the loop's first completed experiment, iteration 1.
   Per-position MTP acceptance on the generic corpus (tg512, `--lm-head-draft`): pos1 59.3% /
   pos2 31.4% / pos3 12.3% — the collapse is along the sequential draft chain, not at pos1. A/B
   against full-head drafting (same commands minus `--lm-head-draft`): on tg512 full head wins

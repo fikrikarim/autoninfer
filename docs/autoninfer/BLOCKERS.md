@@ -46,6 +46,9 @@ blocker needs nothing from you.
   experiment anyway; the repository is single-writer; and the serve's `--max-concurrency 2`
   leaves at most one lane for a second agent. A second agent would contend for the harness's own
   model lane and the research GPU without adding throughput. The loop is single-agent by design.
-- **Quality contract**: the loop's keep/discard rule is speed *at equal or better output
-  quality* — greedy-decode identity for pure performance changes, parity/reference checks for
-  anything touching token semantics. See the protocol (docs/autoninfer/README.md).
+- **Quality policy** (user rule, 2026-08-18): the north star is maximum speed; a small *measured*
+  quality degradation is acceptable for a large speedup (BF16→NVFP4-class tradeoffs are fine). It
+  is quantified with `tools/autoninfer/quality_gate.sh` (greedy 8-prompt gate, per-prompt token
+  hashes), not assumed: pure perf changes must be token-identical; numerics changes keep only at
+  ≥5% M1 gain with a small diff; ≥3/8 prompts changed goes here for your ratification when the
+  speedup is large. Full rules: Ground rules 7 in `docs/autoninfer/README.md`.

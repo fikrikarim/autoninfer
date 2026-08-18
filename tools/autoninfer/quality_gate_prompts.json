@@ -1,0 +1,34 @@
+[
+ {
+  "id": "math-balls",
+  "text": "Solve step by step: A bag contains red and blue balls in a ratio of 3 to 5. If there are 12 more blue balls than red balls, how many red balls are in the bag?"
+ },
+ {
+  "id": "code-neighbor-sum",
+  "text": "Write a Python function that takes a list of integers and returns a new list where each element is replaced by the sum of its circular neighbors. Include a docstring and one doctest example. Do not use numpy."
+ },
+ {
+  "id": "translate-fr",
+  "text": "Translate this into French, preserving a professional tone: 'The meeting was moved to Thursday, but the new timing conflicts with the vendor call, so we will need to reschedule the vendor slot.'"
+ },
+ {
+  "id": "logic-bulbs",
+  "text": "Three switches outside a closed room control three light bulbs inside the room. You may enter the room exactly once. Explain a procedure that determines which switch controls which bulb."
+ },
+ {
+  "id": "math-modexp",
+  "text": "What is the remainder when 7 to the power of 100 is divided by 100? Show the reasoning."
+ },
+ {
+  "id": "summarize",
+  "text": "Summarize this paragraph in exactly two sentences: 'The reservoir had been at 61 percent capacity through the summer. After three days of rainfall, operators released water to make room for a forecast storm, bringing the level to 74 percent. The dam committee approved a new inflow protocol that caps releases at 2,000 cubic meters per second and requires a 12-hour notice before any release above that threshold. Farmers downstream supported the cap, which protects irrigation allocations, while the utility argued it reduces flood protection.'"
+ },
+ {
+  "id": "code-c-bug",
+  "text": "Point out the bug in this C function and give the corrected version:\n\nint count(const char *s) { int n = 0; while (*s) { if (*s == 'e' || *s == 'E') n++; s++; } return n; }\n\nIt is meant to count vowels, not the letter e."
+ },
+ {
+  "id": "haiku",
+  "text": "Complete this haiku (5-7-5 syllables) about winter light: 'The lantern dims slowly.'"
+ }
+]
