@@ -1,1 +1,2 @@
 commit	metric	status	description
+5a3aab2	111.8 tok/s, 27.1% accept	keep	baseline M1 (tg128, bench corpus, C=1, max-ctx 16384) on healthy GPU1; generic-corpus point — published C=1 (143.8 tok/s, 48.9% accept) is the sustained AIME stream

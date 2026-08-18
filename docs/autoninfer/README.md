@@ -28,7 +28,7 @@ long-context sessions become the norm and interruptions are rare.
 | Repository | `/workspace/autoninfer`, branch `master`, remote `origin` (`fikrikarim/autoninfer`) |
 | Artifact | `models/qwen3_8_27b_nvfp4.ninfer` (local prerequisite, git-ignored) |
 | GPU 0 | **Reserved.** The live `ninfer-serve` runs here and saturates the GPU; that serve is the harness's own model. Never bind tests, benchmarks, or profilers to GPU 0; never kill or reconfigure its process. |
-| GPU 1 | **Research GPU.** All tests, benchmarks, and profile captures run here. |
+| GPU 1 | **Research GPU.** All tests, benchmarks, and profile captures run here. Verify it before a benchmarking session: `bash tools/gpu_health.sh 1` (host-timed, high-occupancy bandwidth + compute probe; do not trust nvidia-smi counters or single-warp `clock64()` spins — see the changelog below). |
 | Build | `build/` is configured with `-DNINFER_BUILD_BENCHMARKS=ON -DBUILD_TESTING=ON`. Rebuild: `cmake --build build -j` (no numeric `-j`). |
 
 The live serve is a plain process, not a supervisor service. After an instance restart it must be
@@ -89,12 +89,17 @@ matching the published qwen3.8-27b nvfp4 serving profile.
 
 | ID | Purpose | Command |
 |---|---|---|
-| M1 | end-to-end decode (primary metric) | `CUDA_VISIBLE_DEVICES=1 ./build/bench/ninfer_bench --weights models/qwen3_8_27b_nvfp4.ninfer -n 128 -r 3 --warmup 1 --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft` |
+| M1 | end-to-end decode (primary metric) | `CUDA_VISIBLE_DEVICES=1 ./build/bench/ninfer_bench --weights models/qwen3_8_27b_nvfp4.ninfer -n 128 -r 3 --warmup 1 --max-ctx 16384 --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft` |
 | M2 | end-to-end prefill | `CUDA_VISIBLE_DEVICES=1 ./build/bench/ninfer_bench --weights models/qwen3_8_27b_nvfp4.ninfer -p 2048 -r 3 --warmup 1 --kv-dtype int8` |
 | M3 | kernel attribution | the `bench/` Op benchmarks (see `bench/README.md`), always with `CUDA_VISIBLE_DEVICES=1` |
 | M4 | deep kernel profiling | `ncu`/`nsys` on a single bench point (`--profile` / `--profile-measured`), output under `profiles/` |
 
-M1 reports decode tok/s and MTP acceptance over `tg128`. M1 is the number `results.tsv` tracks.
+M1 reports decode tok/s and MTP acceptance over `tg128` from the generic `bench_corpus.ids`
+at a 16,384-token context ceiling (the published campaign's setting). M1 is the number
+`results.tsv` tracks. MTP acceptance is content-dependent: the generic corpus gives ~27%
+acceptance at `tg128`, while the sustained AIME reasoning stream of the published campaign
+gives ~49%. Compare M1-to-M1 across commits; use the published corpus runner
+(`tools/bench/run_serve_concurrency.py`, see `docs/performance.md`) for campaign-scale claims.
 
 ## Results log
 
@@ -123,9 +128,11 @@ Published reference (qwen3.8-27b nvfp4, RTX 5090, INT8 KV, MTP3 — full methodo
 
 Single-request MTP0: 8,340.4 prefill tok/s at a 7,680-token prompt; 71.2 decode tok/s.
 
-First local M1 measurement at current HEAD: **pending** — GPU 1 was wedged when this document was
-written (see the changelog below). Run M1 immediately after GPU 1 is healthy and record it as the
-baseline row.
+First local M1 measurement (HEAD `5a3aab20`, GPU 1, 2026-08-18):
+
+- `tg128` decode: **111.82 ± 0.07 tok/s**, MTP acceptance **27.1%** (213 rounds, 0 fallbacks).
+  Generic-corpus operating point; see the corpus-dependence note above before comparing it to
+  the 143.8 / 48.9% published C=1 point (sustained AIME stream).
 
 ## Hypothesis backlog
 
@@ -157,12 +164,15 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
   - `.gitignore`: `models/` ignored (large local prerequisite).
   - `.pi/extensions/autoninfer.ts`: pi project extension that injects the live GPU/serve/git
     snapshot into the agent system prompt and registers `/autoninfer`.
-  - **GPU 1 is wedged** as of this writing: SM busy counter pinned at 100% with no attached
-    process, a 200 M-cycle spin kernel takes 69.5 ms instead of ~70 µs (effective SM clock ~1000×
-    below the reported 2872 MHz), triad 52 GiB/s versus ~1.8 TB/s HBM3e. Userspace recovery is not
-    available (clock reset lacks permission, `--gpu-reset` unsupported, persistence toggle had no
-    effect). Recovery requires an instance restart, which also kills the live serve on GPU 0 —
-    relaunch it with the recorded command. GPU 0 is healthy.
+  - **GPU 1 wedged at ~07:54**, then **recovered by ~08:40 without a restart.** Wedged state:
+    SM busy pinned at 100% with no attached process, triad 52 GiB/s versus ~1.5 TB/s. The initial
+    diagnosis leaned on a single-warp `clock64()` spin (69 ms instead of ~70 µs) — that test is
+    now known to be a bad indicator: a 32-thread spin leaves the SM clock-gated at ~2.9 MHz
+    whether the card is healthy or wedged, so it read identically in both states. The trustworthy
+    signals are host-timed, high-occupancy workloads (`tools/gpu_health.sh`: triad ≥ 500 GiB/s and
+    all-SM FMA ≥ 20 TFLOP/s; observed healthy 2026-08-18: 1,467 GiB/s and 110.7 TFLOP/s). If a
+    wedge recurs and persists, an instance restart is the only known recovery; it also kills the
+    live serve on GPU 0 — relaunch it with the recorded command. GPU 0 was healthy throughout.
 - **2026-08-18 — context ceiling raised; models config tracked in repo.**
   - Serve restart command changed to `--max-context 262144 --kv-capacity 262144` (pinned pool at
     the previous auto-resolved size: zero memory delta, per-sequence ceiling doubled to the model
@@ -175,3 +185,10 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
     requests past the old 131,072 engine ceiling, which a still-old serve rejects.
   - Git identity set to `Fikri Karim <fkfikrikarim@gmail.com>`; the two setup commits were
     re-authored accordingly.
+- **2026-08-18 — GPU health probe added; first local baseline.**
+  - `tools/gpu_health.sh <gpu-index>`: one-command research-GPU check (host-timed, high-occupancy
+    triad bandwidth + all-SM FP32 FMA; pass thresholds ≥ 500 GiB/s and ≥ 20 TFLOP/s). Replaces
+    the spin-based check, which read identically on healthy and wedged cards. Observed healthy:
+    1,467 GiB/s, 110.7 TFLOP/s. Run it before every benchmarking session (see GPU 1 row).
+  - First local M1 baseline recorded: `tg128` 111.82 ± 0.07 tok/s, 27.1% MTP acceptance at HEAD
+    `5a3aab20` (row 1 of `results.tsv`).
