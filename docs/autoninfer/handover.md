@@ -7,9 +7,18 @@ Keep it complete and concise.
 
 ## State
 
-- HEAD: `59f9e54d` is the commit under test (drive.sh stdin fix); the experiment-record commit
-  (README changelog + results row + this file) is its child — confirm with `git log -2`.
-  Working tree clean after the record commit.
+- HEAD: `855acadd` (chore: gitignore `.env` — from the interactive session, below). This iteration's
+  experiment record is `fb49a024` (child of `59f9e54d`, the commit under test — engine code
+  identical at all three). Confirm the chain with `git log --oneline -5`.
+  Working tree: this file's commit; untracked `tools/autoninfer/exa_{search,content}.sh`
+  belong to the interactive session — leave them alone.
+- **Concurrent session (awareness):** an interactive `pi` TUI (pid 21662, up since 08:22, user-owned)
+  is working in this repo alongside the driver: it committed `18b4b674` (stdin-bug changelog note)
+  and `855acadd` (.gitignore) on top of the driver's commits, and is researching MTP acceptance
+  via the Exa API. Its commits and untracked files are expected; the driver's serve-op deferral
+  detects it. Do NOT kill it (interactive = user's). Avoid GPU 1 contention: check
+  `nvidia-smi` shows no other compute app before any bench, and if the interactive session is
+  mid-experiment, prefer waiting (its work is uncommitted and could conflict on `handover.md`).
 - Baseline M1 (tg128, `--lm-head-draft`, INT8 KV, MTP3): **111.42 ± 0.05 tok/s, 27.14% accept,
   1.803 tok/round, per-position 105/51/15 of 213 rounds** — reproduced this iteration at
   `59f9e54d` (original baseline 111.82 ± 0.07 @ 27.1%). This is the keep/discard reference.

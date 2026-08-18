@@ -22,6 +22,12 @@ blocker needs nothing from you.
 
 ## Standing notes (awareness, no action needed)
 
+- **Concurrent interactive session (2026-08-18 ~09:15):** an interactive `pi` TUI (pid 21662,
+  up since 08:22) works in this repo alongside the unattended driver — it committed `18b4b674`
+  and `855acadd` and is researching MTP acceptance (Exa helpers at `tools/autoninfer/exa_*.sh`).
+  The driver's serve-op deferral already detects live pi sessions. If the interactive session and
+  a driver iteration collide on GPU 1 or `handover.md`, the interactive one wins by default — the
+  driver iteration should back off. Killed only by the user.
 - **Instance restart (stop/start or reboot) is always safe**: the supervised primary serve and
   this loop both autostart, and the container filesystem (including the model artifact)
   survives. If a GPU-wedge blocker above asks for a restart, that is the *only* known recovery
