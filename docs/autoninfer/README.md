@@ -100,7 +100,10 @@ keep this document in sync), then restart via one of the two paths above. Unatte
 (`autoninfer-driver`) sessions do not use the bridge — they write
 `{"action":"restart-primary"}` to `/tmp/autoninfer-ops/pending.json` and the driver applies it
 between iterations, when no driver pi process is alive (and it defers while an interactive pi
-session is running).
+session is running). Current extra flag: `--pending-timeout-ms 300000` — with `C=2`, an
+interactive session and a loop iteration can share the serve: the second request queues up to 5
+minutes instead of failing after the 30 s default (observed 2026-08-18: long interactive turns
+starved loop requests past 30 s → `inference request expired while waiting for admission`).
 
 ### Unattended driver
 

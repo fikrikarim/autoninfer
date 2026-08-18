@@ -15,4 +15,4 @@ cd /workspace/autoninfer
 exec ./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
     --host 127.0.0.1 --port 8080 \
     --max-context 262144 --kv-capacity 262144 --kv-dtype int8 \
-    --max-concurrency 2 --spec mtp --draft-tokens 3 --lm-head-draft
+    --max-concurrency 2 --pending-timeout-ms 300000 --spec mtp --draft-tokens 3 --lm-head-draft
