@@ -354,7 +354,9 @@ GPU ownership (two RTX 5090s):
 `cmake --build build -j`. The project-local pi extension (`.pi/extensions/autoninfer.ts`) injects
 the live GPU/serve/git snapshot into the agent system prompt, registers `/autoninfer`, and
 registers the `autoninfer_standby` switchover tool. The unattended research loop is
-`tools/autoninfer/drive.sh` (supervisor service `autoninfer-driver`, manual start/stop).
+`tools/autoninfer/drive.sh` (supervisor service `autoninfer-driver`, autostart): one experiment
+per fresh session, state carried by `docs/autoninfer/handover.md`, and anything needing a human
+goes to `docs/autoninfer/BLOCKERS.md` (single user-facing point, checked on GitHub).
 `models/` holds the large local prerequisite artifacts and is git-ignored.
 
 ## Commits

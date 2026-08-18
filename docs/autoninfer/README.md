@@ -15,6 +15,11 @@ engine being optimized. The pi `ninfer` provider points at `http://127.0.0.1:808
 recreated (`ln -sfn /workspace/autoninfer/.pi/models.json ~/.pi/agent/models.json`). Faster NInfer
 serves the researcher faster.
 
+The loop runs unattended (see [Unattended driver](#unattended-driver)). Its state across
+iterations lives in the repository, per the harness design: `docs/autoninfer/handover.md` carries
+the forward state (what the next iteration does), `results.tsv` the experiment log, and
+[`BLOCKERS.md`](BLOCKERS.md) is the single user-facing point for anything that needs a human.
+
 The `contextWindow` (196,608) is deliberately below the engine's 262,144 per-sequence ceiling so
 pi's auto-compaction (window minus its 16,384-token reserve) leaves ~65.5K of the shared 262,144-
 token KV pool for a second concurrent request. Raise it toward 262,144 only if single-request
@@ -99,22 +104,41 @@ session is running).
 
 ### Unattended driver
 
-`tools/autoninfer/drive.sh` (service `autoninfer-driver`, manual start/stop) runs the research
-loop headlessly: `pi -p` iterations on a dedicated session id (`autoninfer-driver`, visible via
-`pi -r`), each iteration choosing and running one experiment per the protocol in this document,
-logging to `results.tsv`, and committing + pushing. Between iterations it applies the serve ops
-above. Log: `/var/log/autoninfer-drive.log`. Controls:
+`tools/autoninfer/drive.sh` (service `autoninfer-driver`, autostart) runs the research loop
+headlessly. Each iteration is a **fresh** `pi -p` session (`autoninfer-driver-N`, visible via
+`pi -r`): the repository is the persistent memory and `docs/autoninfer/handover.md` carries the
+state across iterations, so no session context grows unbounded over a day of work. An iteration
+picks one hypothesis from the backlog (or the handover's next step), implements it, measures
+with the protocol menu, logs the row to `results.tsv`, rewrites the handover, and commits +
+pushes. Between iterations the driver also:
+
+- applies pending serve ops (see [Serve management](#serve-management)) — deferred while an
+  interactive pi session is alive;
+- self-heals the primary serve if it is down (the harness has no model to think with otherwise);
+- gates on GPU 1 health (`tools/gpu_health.sh 1`) with 5-minute backoff **without consuming an
+  iteration** — wedges have cleared on their own within the hour on this host; after 2 h it
+  records a blocker in `BLOCKERS.md` and stops (needs an instance restart).
+
+Budget: `DURATION_HOURS=30` wall clock (set in the service config), `MAX_ITER=120` safety cap,
+`ITER_TIMEOUT_S=3600` hard cap per iteration. A clean exit (budget, stop flag, recorded blocker)
+is **not** restarted; `supervisorctl start autoninfer-driver` re-arms it. After an instance
+restart the loop resumes on its own (autostart). Log: `/var/log/autoninfer-drive.log`. Controls:
 
 ```bash
-supervisorctl start autoninfer-driver     # start the loop (MAX_ITER env var caps iterations, default 24)
+supervisorctl start autoninfer-driver     # (re)arm the loop
 supervisorctl stop autoninfer-driver      # stop after the current iteration
- touch /tmp/autoninfer-stop               # agent-side stop (also read between iterations)
+touch /tmp/autoninfer-stop                # agent-side stop (also read between iterations)
 echo '{"action":"restart-primary"}' > /tmp/autoninfer-ops/pending.json   # queue a serve restart
 ```
 
-The driver's iterations and an interactive session share the primary serve (`--max-concurrency 2`
-absorbs the overlap; excess requests queue with a 30 s pending timeout). The driver stops itself
-when the primary cannot be restored after a failed op — there is no model to iterate on.
+The driver's iterations and an interactive session share the primary serve
+(`--max-concurrency 2` absorbs the overlap; excess requests queue with a 30 s pending timeout).
+The driver stops itself when the primary cannot be restored (no model to iterate on) and records
+why in `BLOCKERS.md`.
+
+**Single-agent by design**: the research GPU serializes experiments anyway, the repository is
+single-writer, and the serve's two lanes leave at most one for a second agent — parallel agents
+would contend without adding throughput.
 
 ## Ground rules
 
@@ -271,3 +295,13 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
     between iterations only (deferred while an interactive pi session is alive); MAX_ITER cap.
   - `.pi/models.json` now carries both provider entries (`ninfer`, `ninfer-standby`); the
     standby's distinct model id makes misrouted requests 404 loudly.
+- **2026-08-18 — 24 h+ unattended operation hardened.**
+  - Driver rewritten for long-horizon autonomy: fresh `pi -p` session per iteration
+    (`autoninfer-driver-N`; the repository is the persistent memory), wall-clock budget
+    (`DURATION_HOURS=30`) + safety caps, 1 h per-iteration timeout, emergency primary-serve
+    self-heal between iterations, and a GPU 1 health gate that backs off 5 min at a time
+    without consuming an iteration (2 h patience, then a recorded blocker + clean stop).
+  - New state documents: `docs/autoninfer/handover.md` (rewritten every iteration; the next
+    iteration's only inherited context) and `docs/autoninfer/BLOCKERS.md` (the single
+    user-facing point for anything needing a human; the loop stops itself and records there
+    on unrecoverable states).
