@@ -30,7 +30,7 @@ STOP_FLAG=/tmp/autoninfer-stop
 LOG=/var/log/autoninfer-drive.log
 BLOCKERS="$REPO/docs/autoninfer/BLOCKERS.md"
 SESSION_PREFIX=autoninfer-driver
-MAX_ITER=${MAX_ITER:-120}                 # safety cap on iteration count
+MAX_ITER=${MAX_ITER:-400}                 # safety cap on iteration count
 DURATION_HOURS=${DURATION_HOURS:-30}      # wall-clock budget
 GPU1_UNHEALTHY_MAX_MIN=${GPU1_UNHEALTHY_MAX_MIN:-120}
 ITER_TIMEOUT_S=${ITER_TIMEOUT_S:-3600}    # hard cap per iteration
@@ -111,7 +111,9 @@ Hard rules:
 - Commit (Conventional Commit subject, your git identity is configured) and push to origin before ending the iteration. NEVER commit .env (git-ignored, holds the EXA key) - if git status ever shows it as untracked-and-added, unstage it.
 - End by REWRITING docs/autoninfer/handover.md for the next iteration: current HEAD; what was tried and the measured result; what is committed; the single next hypothesis with concrete first steps (exact commands where possible); anything the next iteration must not repeat. It is the only context the next iteration inherits - make it complete and concise.
 - If you are blocked on something only the user can do (instance restart, artifact restore, a product decision): append a row under "## Active blockers" in docs/autoninfer/BLOCKERS.md (date, blocker, needed action, why), commit + push, write the same reason to /tmp/autoninfer-stop, and end the iteration.
-- Keep the iteration self-contained: a single M1 bench takes ~2 minutes; if your experiment cannot finish in a reasonable time, narrow its scope, keep whatever result you have, and leave the rest as the next step in the handover. Do not start speculative multi-part changes you cannot finish and measure.'
+- Keep the iteration self-contained: a single M1 bench takes ~2 minutes; if your experiment cannot finish in a reasonable time, narrow its scope, keep whatever result you have, and leave the rest as the next step in the handover. Do not start speculative multi-part changes you cannot finish and measure.
+- Concurrent interactive sessions: another live pi session (a pi process whose ancestor chain reaches a user tty, not drive.sh/supervisord) may share this repository. If the tree is dirty at start, identify the owner from the handover plus `git diff` plus file mtimes, and check liveness (`ps -eo pid,ppid,stat,etime,cmd | grep -w pi`; exclude the sessions spawned by drive.sh (their grandparent is drive.sh)). If a live session owns the WIP, do not edit its files - but note that no-op backoff iterations are a protocol violation: at most 2 consecutive backoffs on the same dirt. On the 3rd iteration you must act: (a) if the WIP is converged (the handover says verified, or no writes to its files in 30+ minutes), take it over - build, run the affected tests, strip TEMP debug code and throwaway harnesses, commit + push - and continue; (b) if the owning session is gone, `git stash push -m "<what this was>"` it and proceed on the clean HEAD; (c) only if taking over is genuinely unsafe, append a BLOCKERS.md row plus /tmp/autoninfer-stop asking the user to decide. Never propagate a backoff instruction into the next handover - record the dirt state and liveness facts and let the next iteration decide fresh.
+- Budget: MAX_ITER is a safety cap on iteration count, not a time budget - never compute "time to budget exit" from the iteration count or the backoff pace.'
 
 while true; do
   # 1. Stop flag (also set by record_blocker / agent-side).
