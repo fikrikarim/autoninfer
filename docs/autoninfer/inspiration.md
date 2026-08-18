@@ -87,6 +87,60 @@ Seeded 2026-08-18 ~09:15 UTC by the interactive session.
   <https://blog.squeezebits.com/vllm-vs-tensorrtllm-8-kv-cache-quantization-35079> — accuracy
   data per scheme; useful priors if INT4 is ever attempted.
 
+## H6 — DSpark speculator (architectural lane, 2026-08-18)
+
+- **DSpark** (RadixArk, HF model card, read 2026-08-18): <https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark>
+  A DSpark speculator for Qwen3.8-27B: "extends DFlash with target-model auxiliary features and a
+  confidence head that dynamically chooses the number of draft tokens" (trained with SpecForge,
+  served with SGLang `--speculative-algorithm DSPARK`). Facts: 1.36B params BF16 (2.72 GB),
+  hidden 5120, **5 full-attention GQA layers** (40 Q / 8 KV heads), target auxiliary feature taps
+  at target layers **4, 16, 28, 40, 52**, confidence head (vanilla Markov, rank 256), block size
+  **7 draft tokens** (verify width 8), max position 262144. Claimed acceptance length (mean tokens
+  accepted per verify step, incl. bonus; FP8 target, temp 0.6 / top-k 20 / top-p 0.95, thinking
+  on, 2048 tokens): AIME 2026 **3.07**, AIME 2025 **3.28**, HumanEval 3.47, GSM8K 4.57,
+  MT-Bench 3.10; macro mean 3.35 over 11 workloads (1,164 requests). SGLang serve line: TP1, FP8
+  target, unquantized draft, block 7.
+- **Why it matters (the on-paper case):** MTP k=3 today = 32.3% accept over 3 drafts (≈1.97
+  expected tok/round incl. bonus, greedy tg128; ≈49% accept on the sustained AIME stream). DSpark
+  claims 3.07–3.28 accepted/step on AIME-class streams — a claimed +55–65% round-level improvement
+  IF it holds under NInfer conditions (nvfp4 target, greedy, our corpus). Draft window 7 > MTP's
+  5, and the confidence head removes the fixed-k penalty (no more k=2-vs-k=3 re-decision class).
+- **The 5090 fit constraint (user target, measured base):** the current nvfp4 config uses
+  28.98 GiB at ctx 262144 (KV 8.77 GiB, headroom 1.88 GiB; `kv_fit_probe.sh` anchors: 262144 →
+  28.98; 4096 → 20.34). total_used(ctx) ≈ 20.21 + 8.77·(ctx/262144) GiB. DSpark additions:
+  draft weights 2.72 GiB (const); draft KV 20 KiB/tok BF16 (5 layers × 8 heads × 128 × 2 × 2B);
+  auxiliary tap cache 5 taps × 5120 × 2B = **50 KiB/tok** if materialized over the whole window
+  (conservative bound — NInfer discards per-layer hidden states today; SGLang's tap handling is
+  the first thing to verify: cached vs recomputed per round). Estimated fit ceiling (≤30.5 GiB
+  usable): **≈74K ctx with BF16 taps; ≈98K with INT8 taps; ≈112K with INT8 taps + INT8 draft
+  KV.** vs the MTP baseline's 256K. The core trade the experiment must measure: DSpark's
+  acceptance win at 64–96K ctx vs MTP's KV ceiling at 256K, at MATCHED context. (FP8 target is
+  out of the question on the 5090: ~27 GiB weights leaves no KV headroom — nvfp4 target +
+  DSpark is the only viable combination, even though DSpark was trained on the FP8 target's
+  features; feature-ε mismatch is a measured risk, not an assumption.)
+- **NInfer mapping (implementation sketch):** the 35B-A3B DFlash is the pattern — speculator
+  tensors live in an artifact section (`dflash/`), `--spec dflash` selects it, block 1..15, and
+  its persistent context already carries target-produced features (model doc §9). DSpark deltas:
+  (1) **full-attention layers with persistent draft KV** (35B DFlash uses non-causal masked local
+  attention with temporary KV only) — a draft KV arena + draft GQA decode op at verify width 8;
+  (2) **5 auxiliary taps** (4/16/28/40/52 × 5120) — target runtime must capture those layers'
+  hidden states into a cache arena (bf16 or int8) instead of discarding them;
+  (3) **confidence head → dynamic draft length** — the CUDA-Graph decode path captures fixed
+  shapes, so either capture one graph per verify width (2..8 = 7 captures) or bucket widths;
+  (4) converter `tools/convert/qwen3_8_27b/dspark.py` ingesting the HF safetensors into a
+  `dspark/` section of a new 27B artifact variant (we are not tied to the current checkpoint —
+  the artifact is ours to extend). MTP stays the fallback/cross-check.
+- **Experiment protocol (phase-1 pipeline, 2026-08-18):** `EXPERIMENT_FIT=1` (fit probe ladder,
+  expect 65536–98304), `GATE_SPEC_ARGS` for the DSpark serve flags, `EXPERIMENT_M1_ARGS` with the
+  dspark flags; M1 compares at the LARGEST FITTING ctx vs the MTP baseline at that same ctx
+  (tok/s and accept); gate diff is vs the same configuration's pre-state. Promotion of a new
+  spec backend / artifact identity for the 27B target is a product-identity change → BLOCKERS
+  ratification after measurement.
+- **Open practical question:** huggingface.co is not directly reachable from this instance
+  (HTTP 000; github.com is 200) — the 2.72 GB draft download needs a working egress route
+  (proxy env, mirror, or box-to-box copy). Check `env | grep -i proxy` first; if none, ask the
+  user to drop the repo into `models/` (it is small enough for that).
+
 ## Standing method notes
 
 - **Quality gate exists now** (2026-08-18): `tools/autoninfer/quality_gate.sh <label>` — greedy

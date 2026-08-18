@@ -18,11 +18,18 @@
 #
 # Fixed gate conditions (do not edit casually; a gate must be stable across
 # runs): int8 KV, MTP3 + --lm-head-draft, max_context 8192, C=1, greedy.
+# Alternative configurations (architectural experiments) may override the
+# artifact and speculative flags via GATE_WEIGHTS / GATE_SPEC_ARGS; the diff
+# for such a run is against the SAME configuration's pre-state, and the
+# override must be recorded in results.tsv. The canonical MTP3 defaults below
+# must not change.
 set -euo pipefail
 
 label="${1:?usage: quality_gate.sh <label>}"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 PORT=8091
+WEIGHTS="${GATE_WEIGHTS:-models/qwen3_8_27b_nvfp4.ninfer}"
+SPEC_ARGS="${GATE_SPEC_ARGS:---spec mtp --draft-tokens 3 --lm-head-draft}"
 PROMPTS="$REPO/tools/autoninfer/quality_gate_prompts.json"
 OUT="/tmp/quality_gate_${label}.jsonl"
 LOG="/tmp/quality_gate_${label}.serve.log"
@@ -40,10 +47,10 @@ bash "$REPO/tools/gpu_health.sh" 1 || { echo "GPU 1 unhealthy - quality gate abo
 # 2. Boot the temporary greedy serve on GPU 1.
 say "booting temporary greedy serve on GPU 1 (port $PORT)..."
 CUDA_VISIBLE_DEVICES=1 "$REPO/build/apps/ninfer-serve" \
-  models/qwen3_8_27b_nvfp4.ninfer \
+  "$WEIGHTS" \
   --host 127.0.0.1 --port "$PORT" \
   --max-context 8192 --kv-capacity auto --kv-dtype int8 \
-  --max-concurrency 1 --spec mtp --draft-tokens 3 --lm-head-draft \
+  --max-concurrency 1 $SPEC_ARGS \
   --greedy >"$LOG" 2>&1 &
 serve_pid=$!
 echo "$serve_pid" > /tmp/.quality_gate_serve.pid

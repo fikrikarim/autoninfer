@@ -21,6 +21,17 @@
 #                    stage=<last stage reached>
 #                    gate=<path to /tmp/quality_gate_post-<name>.jsonl>
 #                    m1=<tg128 decode out tok/s>,<acceptance rate> (JSON report)
+#                    fit=<probe line, only when EXPERIMENT_FIT=1>
+#
+# Architectural experiments (alternative checkpoint / speculator):
+#   EXPERIMENT_WEIGHTS=<other.ninfer>  swap the artifact for the whole pipeline
+#   EXPERIMENT_FIT=1                   add the KV fit probe stage (kv_fit_probe.sh)
+#   GATE_SPEC_ARGS="--spec dflash --draft-tokens 7 --lm-head-draft"  gate serve
+#     speculative flags for a configuration that is not MTP3 (GATE_WEIGHTS
+#     defaults to EXPERIMENT_WEIGHTS)
+# Fit constraint (user rule, 2026-08-18): a candidate configuration must fit
+# FULL KV on the 5090 to be a real alternative - set EXPERIMENT_FIT=1 for every
+# architectural experiment and record the fit line in results.tsv.
 #
 # The M1 menu args can be overridden for A/B experiments (e.g. k=2). The override
 # REPLACES the whole default, so always include the full menu line:
@@ -38,7 +49,9 @@ STATUS="$DIR/$NAME.status"
 RESULT="$DIR/$NAME.result"
 RUNNING="$DIR/$NAME.running"
 LOCK="$DIR/pipeline.lock"
-M1_ARGS=${EXPERIMENT_M1_ARGS:---weights models/qwen3_8_27b_nvfp4.ninfer -n 128 -r 3 --warmup 1 --max-ctx 16384 --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft}
+WEIGHTS=${EXPERIMENT_WEIGHTS:-models/qwen3_8_27b_nvfp4.ninfer}
+export GATE_WEIGHTS=${GATE_WEIGHTS:-$WEIGHTS}
+M1_ARGS=${EXPERIMENT_M1_ARGS:---weights $WEIGHTS -n 128 -r 3 --warmup 1 --max-ctx 16384 --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft}
 M1_TIMEOUT=${EXPERIMENT_M1_TIMEOUT:-1200}
 GATE_LABEL="post-$NAME"
 
@@ -53,13 +66,14 @@ echo $$ > "$RUNNING"
 
 say() { echo "$(date -Is) $*" >> "$LOG"; }
 stage() { echo "$1" > "$STATUS"; say "=== stage: $1"; }
-finish() { # $1=ok|failed $2=stage $3=m1 summary (optional)
+finish() { # $1=ok|failed $2=stage $3=m1 summary (optional) $4=fit line (optional)
   echo "$([ "$1" = ok ] && echo done || echo "failed:$2")" > "$STATUS"
   {
     echo "status=$1"
     echo "stage=$2"
     echo "gate=/tmp/quality_gate_${GATE_LABEL}.jsonl"
     [ -n "${3:-}" ] && echo "m1=$3"
+    [ -n "${4:-}" ] && echo "fit=$4"
   } > "$RESULT"
   say "=== finished: $1 at stage $2"
   rm -f "$RUNNING"
@@ -75,8 +89,20 @@ if [ "$rc" -ne 0 ]; then
   fail build
 fi
 
+FITLINE=""
+if [ "${EXPERIMENT_FIT:-0}" = "1" ]; then
+  stage fitting
+  say "KV fit probe: tools/autoninfer/kv_fit_probe.sh $WEIGHTS"
+  FITOUT=$(bash tools/autoninfer/kv_fit_probe.sh "$WEIGHTS" >> "$LOG" 2>&1) || {
+    say "KV fit probe FAILED (no ladder ctx fits)"
+    fail fit
+  }
+  FITLINE=$(echo "$FITOUT" | grep '^FIT ' | tail -1 | sed 's/^FIT //')
+  say "fit: $FITLINE"
+fi
+
 stage gating
-say "quality gate: tools/autoninfer/quality_gate.sh $GATE_LABEL"
+say "quality gate: tools/autoninfer/quality_gate.sh $GATE_LABEL (weights=$WEIGHTS)"
 bash tools/autoninfer/quality_gate.sh "$GATE_LABEL" >> "$LOG" 2>&1
 rc=$?
 if [ "$rc" -ne 0 ]; then
@@ -109,5 +135,5 @@ PYEOF
 TOKS=$(echo "$M1_METRIC" | awk '{print $1}')
 ACC=$(echo "$M1_METRIC"  | awk '{print $2}')
 say "M1: $TOKS tok/s, $ACC accept"
-finish ok measuring "$M1_LABEL $TOKS tok/s, $ACC accept"
+finish ok measuring "$M1_LABEL $TOKS tok/s, $ACC accept" "$FITLINE"
 exit 0

@@ -173,6 +173,21 @@ would contend without adding throughput.
    choosing a new hypothesis, when stuck, or when a result is surprising — at most ~2 searches per
    iteration, ≤10 minutes. Actionable findings are appended to
    [inspiration.md](inspiration.md) (deduped; one entry: source + concrete NInfer idea).
+9. **Large architectural changes (user rule, 2026-08-18): the experiment space is not limited to
+   kernel/schedule edits** — alternative checkpoints, quantizations, and speculative backends are
+   first-class experiments, and the loop is not tied to the current nvfp4 artifact. Two rules
+   govern them: (a) **FIT IS A FIRST-CLASS RESULT** — a candidate configuration must fit full KV
+   on the 5090 (32 GiB). Measure it with `tools/autoninfer/kv_fit_probe.sh <weights>` (largest
+   `--max-ctx` that loads + KV/total/headroom GiB) or via the pipeline's fit stage
+   (`EXPERIMENT_FIT=1`), and record the fit line in the `results.tsv` row; (b) **compare at
+   MATCHED FITTING CONTEXT** — a candidate's M1 is compared against the baseline at the same
+   (largest mutually fitting) context, not at each one's own menu ctx. The pipeline carries
+   these: `EXPERIMENT_WEIGHTS=<artifact>` swaps the target artifact for the whole run, and
+   `GATE_SPEC_ARGS`/`GATE_WEIGHTS` (handed to `quality_gate.sh`) point the gate serve at the
+   candidate's configuration; for a non-MTP3 configuration the gate diff is against the same
+   configuration's pre-state, with the override recorded in the row. Adopting a new speculative
+   backend or artifact identity into the product is a product-identity change → user ratification
+   via `BLOCKERS.md` after the measurement.
 
 ## The loop
 
@@ -243,19 +258,33 @@ First local M1 measurement (HEAD `5a3aab20`, GPU 1, 2026-08-18):
 
 Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
 
-1. **MTP acceptance (45.8–48.9%) is far below the other measured profiles (67–71%).** Audit this
+1. **DSpark speculator (ARCHITECTURAL, seeded 2026-08-18 with full analysis in
+   [inspiration.md](inspiration.md) H6).** RadixArk/Qwen3.8-27B-DSpark: a 1.36B BF16 5-layer
+   full-attention GQA speculator (block 7, verify width 8, target aux-feature taps at layers
+   4/16/28/40/52, Markov confidence head for dynamic draft length). Paper: 3.07–3.28 accepted
+   tokens/step on AIME-class streams vs MTP k=3's ≈1.97 expected tok/round — a claimed +55–65%
+   round-level win. Governing constraint (Ground rule 9): the 5090 must fit it — measured base
+   leaves 1.88 GiB headroom at ctx 262144 vs 2.72 GiB draft weights + aux-tap cache
+   (est. ≈74–112K ctx ceiling depending on tap/KV quantization). Steps: (i) get the 2.72 GB HF
+   repo onto the box (HF egress is blocked; check proxy env or ask the user to drop it into
+   `models/`); (ii) converter `tools/convert/qwen3_8_27b/dspark.py` → `dspark/` artifact section
+   (pattern: the 35B `dflash/` section); (iii) 27B speculator leaf family: draft GQA decode at
+   width 8 + persistent draft KV, aux-tap capture arena, confidence head, dynamic verify width
+   (per-width graph captures); (iv) measure: `EXPERIMENT_FIT=1`, M1 vs MTP at the matched fitting
+   ctx, gate with `GATE_SPEC_ARGS`. Product adoption → BLOCKERS ratification.
+2. **MTP acceptance (45.8–48.9%) is far below the other measured profiles (67–71%).** Audit this
    artifact's draft path: proposal-head quality on the mixed FP8/NVFP4 weights, `--lm-head-draft`
    versus full-head drafting, and per-position acceptance to find which draft positions collapse.
-2. **Prefill trails the qwen3.6-27b nvfp4 counterpart by 1.34×** (8,340 versus 11,191 tok/s at
+3. **Prefill trails the qwen3.6-27b nvfp4 counterpart by 1.34×** (8,340 versus 11,191 tok/s at
    7,680 tokens). The qwen3.8 nvfp4 profile keeps FP8 on the token embedding, attention
    projections, GDN projections, output head, and remaining MLP weights; check the A8 crossovers of
    `fp8_linear_add` / `fp8_linear_swiglu` and the FP8 GDN input projection at prefill token counts.
-3. **Batched decode at concurrency ≥ 4** trails the qwen3.6 nvfp4 profile in absolute tok/s despite
+4. **Batched decode at concurrency ≥ 4** trails the qwen3.6 nvfp4 profile in absolute tok/s despite
    a good 5.33× C=1→C=8 scaling; compare the batched round path (compaction, sampling, MTP pack)
    between the two 27B packages.
-4. **Qwen3.8-27B `groupwise-int` is supported but has no published benchmark** — a second profile on
+5. **Qwen3.8-27B `groupwise-int` is supported but has no published benchmark** — a second profile on
    the same execution package; useful as an execution-path control and as a newly measured identity.
-5. **Host-side round overhead**: argmax over the 248,077-vocabulary, MTP pack/split transforms, and
+6. **Host-side round overhead**: argmax over the 248,077-vocabulary, MTP pack/split transforms, and
    round-boundary compaction; cheap Op-level checks via `bench/ops` (`argmax`, `mtp_pack`).
 
 ## Changelog (autoninfer setup)

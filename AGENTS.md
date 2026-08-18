@@ -359,6 +359,18 @@ per fresh session, state carried by `docs/autoninfer/handover.md`, and anything 
 goes to `docs/autoninfer/BLOCKERS.md` (single user-facing point, checked on GitHub).
 `models/` holds the large local prerequisite artifacts and is git-ignored.
 
+**Experiment space (user rule, 2026-08-18): the loop may run large architectural changes**, not
+only kernel/schedule edits — alternative checkpoints, quantizations, and speculative backends
+(e.g. the DSpark speculator, `docs/autoninfer/inspiration.md` H6). The loop is not tied to the
+current `models/qwen3_8_27b_nvfp4.ninfer` artifact. The governing constraint for such
+experiments is **fit: a candidate configuration must fit full KV on one RTX 5090 (32 GiB)** —
+measured with `tools/autoninfer/kv_fit_probe.sh` (largest `--max-ctx` that loads + VRAM
+headroom), and a candidate must beat the baseline at a *matched* fitting context to be kept. The
+pipeline carries these via `EXPERIMENT_WEIGHTS` / `EXPERIMENT_FIT=1` /
+`GATE_SPEC_ARGS`/`GATE_WEIGHTS` (see `docs/autoninfer/README.md`, Ground rule 9). Adopting a new
+speculative backend or artifact identity into the product is a product-identity change and needs
+user ratification via `BLOCKERS.md` after the measurement.
+
 ## Commits
 
 Create a commit only when the user requests one. Use Conventional Commit-style subjects, for
