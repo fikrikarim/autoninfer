@@ -329,9 +329,10 @@ NINFER_WEIGHTS=out/qwen3_6_27b.ninfer
 ## Autoninfer research environment
 
 This checkout is the working environment for **autoninfer**, an agent-driven optimization loop on
-NInfer itself: the pi coding-agent harness is served by the engine it optimizes
-(`~/.pi/agent/models.json` points the `ninfer` provider at `http://127.0.0.1:8080/v1`,
-`qwen3.8-27b`). The protocol, fixed measurement menu, baseline, hypothesis backlog, and changelog
+NInfer itself: the pi coding-agent harness is served by the engine it optimizes — pi's `ninfer`
+provider points at `http://127.0.0.1:8080/v1` (`qwen3.8-27b`); the canonical provider definition
+is tracked at `.pi/models.json`, and `~/.pi/agent/models.json` is a symlink to it — restore the
+symlink after an instance recycle. The protocol, fixed measurement menu, baseline, hypothesis backlog, and changelog
 live in [docs/autoninfer/README.md](docs/autoninfer/README.md); every experiment is logged to
 [docs/autoninfer/results.tsv](docs/autoninfer/results.tsv).
 

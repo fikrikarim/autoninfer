@@ -9,9 +9,16 @@ the file system is the persistent memory (this document, the results log, git), 
 explicit and inspectable, and the loop is a fixed protocol rather than a live conversation.
 
 The loop is self-referential by design: the agent harness (the pi coding agent) is served by the
-engine being optimized. `~/.pi/agent/models.json` points the pi `ninfer` provider at
-`http://127.0.0.1:8080/v1` (`qwen3.8-27b`, NVFP4 artifact). Faster NInfer serves the researcher
-faster.
+engine being optimized. The pi `ninfer` provider points at `http://127.0.0.1:8080/v1`
+(`qwen3.8-27b`, NVFP4 artifact). The provider definition is tracked at [`.pi/models.json`](../../.pi/models.json)
+(canonical) with `~/.pi/agent/models.json` symlinked to it; after a recycle the symlink must be
+recreated (`ln -sfn /workspace/autoninfer/.pi/models.json ~/.pi/agent/models.json`). Faster NInfer
+serves the researcher faster.
+
+The `contextWindow` (196,608) is deliberately below the engine's 262,144 per-sequence ceiling so
+pi's auto-compaction (window minus its 16,384-token reserve) leaves ~65.5K of the shared 262,144-
+token KV pool for a second concurrent request. Raise it toward 262,144 only if single-request
+long-context sessions become the norm and interruptions are rare.
 
 ## Environment
 
@@ -31,10 +38,22 @@ relaunched manually:
 cd /workspace/autoninfer
 setsid ./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
   --host 127.0.0.1 --port 8080 \
-  --max-context 131072 --kv-capacity auto --kv-dtype int8 \
+  --max-context 262144 --kv-capacity 262144 --kv-dtype int8 \
   --max-concurrency 2 --spec mtp --draft-tokens 3 --lm-head-draft \
   > /var/log/portal/ninfer-serve.log 2>&1 &
+ln -sfn /workspace/autoninfer/.pi/models.json /root/.pi/agent/models.json   # restore after recycle
 ```
+
+`--kv-capacity 262144` pins the shared KV pool at 262,144 tokens — the exact size
+`--kv-capacity auto` resolved to at the previous 131,072 context ceiling, so the change costs
+zero extra memory while raising the per-sequence ceiling to the model's native 262,144. Do not
+combine a higher `--max-context` with `--kv-capacity auto`: auto sizes the pool as
+`max_concurrency × max_context` tokens, so at a 262,144 context with C=2 it would request
+524,288 tokens ≈ 17.7 GiB (33,792 B/token INT8-G64 for this model; formula in
+[the paged KV reference](../maintainer/paged-kv-cache.md)), which exceeds the ~10.9 GiB that
+remains after the ~20 GiB of weights and the 1 GiB automatic headroom. The pinned KV pool and
+the `contextWindow` in [`.pi/models.json`](../../.pi/models.json) must move together: the window is
+the compaction ceiling, the engine limit is the hard one.
 
 Health check: `curl -s http://127.0.0.1:8080/v1/models`.
 
@@ -144,3 +163,15 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
     available (clock reset lacks permission, `--gpu-reset` unsupported, persistence toggle had no
     effect). Recovery requires an instance restart, which also kills the live serve on GPU 0 —
     relaunch it with the recorded command. GPU 0 is healthy.
+- **2026-08-18 — context ceiling raised; models config tracked in repo.**
+  - Serve restart command changed to `--max-context 262144 --kv-capacity 262144` (pinned pool at
+    the previous auto-resolved size: zero memory delta, per-sequence ceiling doubled to the model
+    native 262,144). Takes effect at the next serve restart.
+  - pi provider config moved into the repo: `.pi/models.json` is canonical,
+    `~/.pi/agent/models.json` is a symlink to it (pi only reads the global path; restore the
+    symlink after a recycle). `contextWindow` raised 131,072 → 196,608 (compaction at 180,224;
+    keeps ~65.5K of pool headroom for concurrent requests). Applies to the next pi session.
+  - The two changes must be applied together: with the window raised, pi will happily build
+    requests past the old 131,072 engine ceiling, which a still-old serve rejects.
+  - Git identity set to `Fikri Karim <fkfikrikarim@gmail.com>`; the two setup commits were
+    re-authored accordingly.
