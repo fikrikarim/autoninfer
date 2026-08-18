@@ -172,7 +172,10 @@ inline constexpr std::int32_t kNvfp4LastSmallT  = 32;
 
 // RTX 5090 cold-cache winners for contiguous Linear output. T=2..4 amortizes activation loads
 // through shared staging; T=5..32 keeps one packed activation tile per warp. The warp-count changes
-// are measured occupancy/register crossovers, not semantic frontiers.
+// are measured occupancy/register crossovers, not semantic frontiers. T=2..4 uses the T=1 GEMV
+// decode association (four chains, same pair-to-chain mapping and final chain sum) so MTP
+// verification (width draft_tokens+1 <= 4) reproduces the T=1 decode route bit-for-bit per
+// committed column (model-doc 8); T>=5 keeps the one-chain measured winner.
 template <class Geometry, int ActiveTokens>
 struct Nvfp4LinearSmallTProductionSchedule {
     static_assert(ActiveTokens >= kNvfp4FirstSmallT);
@@ -182,9 +185,10 @@ struct Nvfp4LinearSmallTProductionSchedule {
     static constexpr auto kActivationAccess = ActiveTokens <= 4
                                                   ? Nvfp4SmallTActivationAccess::SharedPhase
                                                   : Nvfp4SmallTActivationAccess::TokenPacked;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     using Type =
-        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                            Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                            kActivationAccess, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
                             Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
 };
 
@@ -199,9 +203,10 @@ struct Nvfp4LinearSmallTProductionSchedule<Nvfp4GdnInputGeometry, ActiveTokens> 
     static constexpr auto kActivationAccess = ActiveTokens == 2
                                                   ? Nvfp4SmallTActivationAccess::SharedPhase
                                                   : Nvfp4SmallTActivationAccess::TokenPacked;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     using Type =
-        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                            Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                            kActivationAccess, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
                             Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
 };
 
@@ -214,9 +219,10 @@ struct Nvfp4LinearSmallTProductionSchedule<Nvfp4Residual6144Geometry, ActiveToke
     static constexpr int kWarpsPerCta   = ActiveTokens <= 16 ? (ActiveTokens >= 14 ? 16 : 4) : 4;
     static constexpr int kValuesPerLane = ActiveTokens >= 17 && ActiveTokens <= 20 ? 8 : 16;
     static constexpr auto kActivationAccess = Nvfp4SmallTActivationAccess::TokenPacked;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     using Type =
-        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                            Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                            kActivationAccess, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
                             Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
 };
 
@@ -228,9 +234,10 @@ struct Nvfp4LinearSmallTProductionSchedule<Nvfp4Residual17408Geometry, ActiveTok
     static constexpr int kWarpsPerCta       = ActiveTokens <= 16 ? (ActiveTokens >= 8 ? 16 : 4) : 4;
     static constexpr int kValuesPerLane     = ActiveTokens >= 17 && ActiveTokens <= 20 ? 8 : 16;
     static constexpr auto kActivationAccess = Nvfp4SmallTActivationAccess::TokenPacked;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     using Type =
-        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                            Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                            kActivationAccess, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
                             Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
 };
 

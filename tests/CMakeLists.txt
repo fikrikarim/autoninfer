@@ -261,6 +261,9 @@ ninfer_add_op_test(ninfer_gated_delta_net_replay_record_test
 ninfer_add_op_test(ninfer_gdn_replay_fold_test
   SOURCES ops/test_gdn_replay_fold.cpp
   LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_gdn_decode_record_parity_test
+  SOURCES ops/test_gdn_decode_record_parity.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_fused_linear_test(
   ninfer_linear_add_q5_a16_test
   ops/linear_add/test_q5_a16.cpp

@@ -80,9 +80,14 @@ void launch_exact(const Tensor& x, const Weight& weight, Tensor& out, cudaStream
                                                   ? Nvfp4SmallTActivationAccess::SharedPhase
                                                   : Nvfp4SmallTActivationAccess::TokenPacked;
     static constexpr int kWarpsPerCta       = ActiveTokens >= 13 ? 16 : (ActiveTokens >= 5 ? 4 : 8);
-    using Schedule = Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, 16, ActiveTokens, 1, kActivationAccess,
-                                         Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
-                                         Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
+    // T=2..4 keeps the T=1 GEMV decode association (four chains, same chain sum order) so MTP
+    // verification reproduces the T=1 decode route bit-for-bit (model-doc 8); T>=5 keeps the
+    // one-chain measured winner.
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
+    using Schedule =
+        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, 16, ActiveTokens, kAccumulatorChains,
+                            kActivationAccess, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+                            Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
     static_assert((kIntermediate % Schedule::kWarpsPerCta) == 0);
     constexpr int kBlocks = kIntermediate / Schedule::kWarpsPerCta;
     const float inverse   = 1.0F / weight.weight_scale_divisor;

@@ -113,7 +113,12 @@ struct GdnConvEpilogue {
             publish.publish(token, batch_row, row, s1, s2, p);
             s0 = s1;
             s1 = s2;
-            s2 = p;
+            // The persistent convolution history is BF16: the sequential width-1 path reloads
+            // the represented value of each prior column from state, and the snapshot/record
+            // publish stores it BF16-rounded. The multi-token in-kernel history must consume the
+            // same represented value or the folded committed state is no longer a bitwise clone
+            // of the sequential one (ReplaySSM finite-precision clone contract).
+            s2 = __bfloat162float(__float2bfloat16_rn(p));
         }
     }
 };

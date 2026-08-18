@@ -28,8 +28,12 @@ Nvfp4LinearRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows
     }
 
     switch (resolve_nvfp4_problem(output_rows, input_rows)) {
+    // The ordinary decode route is the T=1 A16-consumption GEMV family. MTP verification runs the
+    // same committed prefix at width T = draft_tokens + 1 <= 4 and must reproduce the T=1 route
+    // bit-for-bit per committed column (model-doc 8: a bad draft must not change the emitted-token
+    // distribution), so the W4A4 activation-quantized route is prefill/batch-only (T >= 5).
     case Nvfp4Problem::AttnInput:
-        return tokens >= 4 ? Nvfp4LinearRoute::W4A4 : Nvfp4LinearRoute::A16;
+        return tokens >= 5 ? Nvfp4LinearRoute::W4A4 : Nvfp4LinearRoute::A16;
     case Nvfp4Problem::GdnInput:
         return Nvfp4LinearRoute::W4A4;
     case Nvfp4Problem::MlpGateUp:

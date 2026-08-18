@@ -47,6 +47,9 @@ struct Nvfp4AttentionInputSmallTOutput {
 
 // The four-output epilogue shifts the measured low-T warp crossover relative to contiguous Linear,
 // so Attention owns this production mapping even though both routes share the compute body.
+// T=2..4 uses the T=1 GEMV decode association (four chains) so MTP verification reproduces the
+// T=1 decode route bit-for-bit per committed column (model-doc 8); T>=5 keeps the one-chain
+// measured winner.
 template <int ActiveTokens>
 struct Nvfp4AttentionSmallTProductionSchedule {
     static_assert(ActiveTokens >= kNvfp4FirstSmallT);
@@ -56,9 +59,10 @@ struct Nvfp4AttentionSmallTProductionSchedule {
     static constexpr auto kActivationAccess = ActiveTokens <= 4
                                                   ? Nvfp4SmallTActivationAccess::SharedPhase
                                                   : Nvfp4SmallTActivationAccess::TokenPacked;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     using Type =
-        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                            Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
+        Nvfp4SmallTSchedule<kWarpsPerCta, 1, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                            kActivationAccess, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default, 1,
                             Nvfp4SmallTBlockOrder::RowsContiguous, 1>;
 };
 

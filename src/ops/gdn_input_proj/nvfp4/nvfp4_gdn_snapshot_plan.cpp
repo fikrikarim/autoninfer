@@ -39,8 +39,12 @@ Nvfp4GdnConvPlan nvfp4_gdn_conv_resolve_plan(LinearPolicy policy, std::int32_t t
         if (tokens <= 16) { return {Nvfp4GdnConvScheduleId::SmallTFusedA16}; }
         throw std::invalid_argument("nvfp4 gdn conv A16 is registered only through T=16");
     }
+    // T = draft_tokens + 1 <= 4 is the MTP verification range: it must run the same
+    // A16-consumption fused schedule family as the T=1 decode route so a bad draft cannot
+    // change the emitted-token distribution (model-doc 8). T >= 5 (prefill/batch) takes the
+    // W4A4 materialized route.
     if (tokens == 1) { return {Nvfp4GdnConvScheduleId::DecodeFusedA16}; }
-    if (tokens <= 3) { return {Nvfp4GdnConvScheduleId::SmallTFusedA16}; }
+    if (tokens <= 4) { return {Nvfp4GdnConvScheduleId::SmallTFusedA16}; }
     return {Nvfp4GdnConvScheduleId::Materialized};
 }
 
