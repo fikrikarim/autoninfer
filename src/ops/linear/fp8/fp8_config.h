@@ -270,26 +270,35 @@ inline std::int32_t fp8_linear_small_t_max(Fp8Problem problem) {
 
 // RTX 5090 cold-cache winners for contiguous Linear output. Each geometry owns its measured
 // schedule ranges; fused semantic Ops reuse the mainloop but retain independent route frontiers.
+// T=2..4 reproduces the T=1 GEMV decode association (vpl=8, four chains, same
+// pair-to-chain mapping and final chain sum) so MTP verification (width draft_tokens+1 <= 4)
+// reproduces the T=1 decode route bit-for-bit per committed column (model-doc 8); T>=5 keeps
+// the measured one-chain winner.
 template <class Geometry, int ActiveTokens>
 struct Fp8LinearSmallTProductionSchedule {
     static_assert(ActiveTokens >= kFp8FirstSmallT);
     static_assert(ActiveTokens <= kFp8LinearSmallTMax<Geometry>);
-    static constexpr int kValuesPerLane     = 16;
+    static constexpr int kValuesPerLane     = ActiveTokens <= 4 ? 8 : 16;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     static constexpr auto kActivationAccess = Fp8SmallTActivationAccess::TokenPacked;
     using Type =
-        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
-                          Fp8CodeCache::Default, 1, Fp8SmallTBlockOrder::RowsContiguous, 1>;
+        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                          kActivationAccess, Fp8CodeCache::Default, 1,
+                          Fp8SmallTBlockOrder::RowsContiguous, 1>;
 };
 
 template <int ActiveTokens>
 struct Fp8LinearSmallTProductionSchedule<Fp8AttnInputGeometry, ActiveTokens> {
     static_assert(ActiveTokens >= kFp8FirstSmallT);
     static_assert(ActiveTokens <= kFp8LinearSmallTMax<Fp8AttnInputGeometry>);
+    static constexpr int kValuesPerLane     = ActiveTokens <= 4 ? 8 : 16;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     static constexpr auto kActivationAccess = ActiveTokens >= 3 && ActiveTokens <= 4
                                                   ? Fp8SmallTActivationAccess::SharedPhase
                                                   : Fp8SmallTActivationAccess::TokenPacked;
     using Type =
-        Fp8SmallTSchedule<8, 2, 16, ActiveTokens, 1, kActivationAccess, Fp8CodeCache::Default, 1,
+        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                          kActivationAccess, Fp8CodeCache::Default, 1,
                           Fp8SmallTBlockOrder::RowsContiguous, 1>;
 };
 
@@ -298,11 +307,12 @@ struct Fp8LinearSmallTProductionSchedule<Fp8GdnInputGeometry, ActiveTokens> {
     static_assert(ActiveTokens >= kFp8FirstSmallT);
     static_assert(ActiveTokens <= kFp8LinearSmallTMax<Fp8GdnInputGeometry>);
     static constexpr int kValuesPerLane     = ActiveTokens >= 5 && ActiveTokens <= 6 ? 8 : 16;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     static constexpr auto kActivationAccess = ActiveTokens <= 4
                                                   ? Fp8SmallTActivationAccess::SharedPhase
                                                   : Fp8SmallTActivationAccess::TokenPacked;
     using Type =
-        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
+        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains, kActivationAccess,
                           Fp8CodeCache::Default, 1, Fp8SmallTBlockOrder::RowsContiguous, 1>;
 };
 
@@ -310,12 +320,13 @@ template <int ActiveTokens>
 struct Fp8LinearSmallTProductionSchedule<Fp8MlpGateUpGeometry, ActiveTokens> {
     static_assert(ActiveTokens >= kFp8FirstSmallT);
     static_assert(ActiveTokens <= kFp8LinearSmallTMax<Fp8MlpGateUpGeometry>);
-    static constexpr int kValuesPerLane     = ActiveTokens == 4 ? 8 : 16;
+    static constexpr int kValuesPerLane     = ActiveTokens <= 4 ? 8 : 16;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
     static constexpr auto kActivationAccess = ActiveTokens <= 3
                                                   ? Fp8SmallTActivationAccess::SharedPhase
                                                   : Fp8SmallTActivationAccess::TokenPacked;
     using Type =
-        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, 1, kActivationAccess,
+        Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains, kActivationAccess,
                           Fp8CodeCache::Default, 1, Fp8SmallTBlockOrder::RowsContiguous, 1>;
 };
 
@@ -323,26 +334,30 @@ template <int ActiveTokens>
 struct Fp8LinearSmallTProductionSchedule<Fp8Residual6144Geometry, ActiveTokens> {
     static_assert(ActiveTokens >= kFp8FirstSmallT);
     static_assert(ActiveTokens <= kFp8LinearSmallTMax<Fp8Residual6144Geometry>);
-    static constexpr int kValuesPerLane = ActiveTokens >= 20 && ActiveTokens <= 23 ? 8 : 16;
-    static constexpr int kTokenTile     = ActiveTokens == 24 ? 12 : ActiveTokens;
-    static constexpr auto kBlockOrder   = ActiveTokens == 24
-                                              ? Fp8SmallTBlockOrder::TokenTilesContiguous
-                                              : Fp8SmallTBlockOrder::RowsContiguous;
+    static constexpr int kValuesPerLane =
+        ActiveTokens <= 4 || (ActiveTokens >= 20 && ActiveTokens <= 23) ? 8 : 16;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
+    static constexpr int kTokenTile         = ActiveTokens == 24 ? 12 : ActiveTokens;
+    static constexpr auto kBlockOrder       = ActiveTokens == 24
+                                                  ? Fp8SmallTBlockOrder::TokenTilesContiguous
+                                                  : Fp8SmallTBlockOrder::RowsContiguous;
 
-    using Type = Fp8SmallTSchedule<8, 2, kValuesPerLane, kTokenTile, 1,
-                                   Fp8SmallTActivationAccess::TokenPacked, Fp8CodeCache::Default, 1,
-                                   kBlockOrder, 1>;
+    using Type = Fp8SmallTSchedule<8, 2, kValuesPerLane, kTokenTile, kAccumulatorChains,
+                                   Fp8SmallTActivationAccess::TokenPacked,
+                                   Fp8CodeCache::Default, 1, kBlockOrder, 1>;
 };
 
 template <int ActiveTokens>
 struct Fp8LinearSmallTProductionSchedule<Fp8Residual17408Geometry, ActiveTokens> {
     static_assert(ActiveTokens >= kFp8FirstSmallT);
     static_assert(ActiveTokens <= kFp8LinearSmallTMax<Fp8Residual17408Geometry>);
-    static constexpr int kValuesPerLane = ActiveTokens >= 18 ? 8 : 16;
+    static constexpr int kValuesPerLane = ActiveTokens <= 4 || ActiveTokens >= 18 ? 8 : 16;
+    static constexpr int kAccumulatorChains = ActiveTokens <= 4 ? 4 : 1;
 
-    using Type = Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, 1,
-                                   Fp8SmallTActivationAccess::TokenPacked, Fp8CodeCache::Default, 1,
-                                   Fp8SmallTBlockOrder::RowsContiguous, 1>;
+    using Type = Fp8SmallTSchedule<8, 2, kValuesPerLane, ActiveTokens, kAccumulatorChains,
+                                   Fp8SmallTActivationAccess::TokenPacked,
+                                   Fp8CodeCache::Default, 1, Fp8SmallTBlockOrder::RowsContiguous,
+                                   1>;
 };
 
 } // namespace ninfer::ops::detail

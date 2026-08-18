@@ -22,7 +22,11 @@ Fp8LinearSwiGluRoute resolve_route(LinearPolicy policy, std::int32_t tokens) {
     if (policy != LinearPolicy::AllowA8) {
         throw std::invalid_argument("fp8 linear_swiglu admits only A16 or A8");
     }
-    return tokens == 1 || tokens >= 3 ? Fp8LinearSwiGluRoute::A8 : Fp8LinearSwiGluRoute::A16;
+    // The T=1 decode route for the FP8 MLP gate/up parent is A8; every token count uses A8 so MTP
+    // verification (T = draft_tokens+1 <= 4) reproduces the T=1 route bit-for-bit per committed
+    // column (model-doc 8). The A8 MMA is T-independent per column and its activation quantization
+    // is per-token.
+    return Fp8LinearSwiGluRoute::A8;
 }
 
 void launch_a16(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
@@ -53,8 +57,7 @@ std::size_t fp8_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy, std:
     }
     (void)resolve_route(policy, min_tokens);
     (void)resolve_route(policy, max_tokens);
-    const bool interval_uses_a8 =
-        policy == LinearPolicy::AllowA8 && (min_tokens == 1 || max_tokens >= 3);
+    const bool interval_uses_a8 = policy == LinearPolicy::AllowA8;
     return interval_uses_a8
                ? fp8_a8_workspace_capacity_bytes(max_tokens, Fp8MlpGateUpGeometry::kInputRows)
                : 0;

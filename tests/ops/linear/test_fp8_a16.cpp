@@ -32,9 +32,10 @@ int run_fp8_a16() {
     constexpr std::array mlp_invocations{
         Invocation{1, CallForm::A16Convenience, ops::LinearPolicy::A16Only},
         Invocation{2, CallForm::A16Convenience, ops::LinearPolicy::A16Only},
-        Invocation{2, CallForm::Policy, ops::LinearPolicy::AllowA8},
-        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8},
     };
+    // The FP8 MLP gate/up parent is A8 for every token count under AllowA8 (its T=1 decode route
+    // is A8, so the MTP verify widths must stay on it); its A16 route is exercised only through
+    // the A16Only policy above and the A8 route here by test_fp8_a8.cpp.
     failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
                           {34816, 5120, 821U, Comparison::Sampled, true, mlp_invocations});
     constexpr std::array vocabulary_invocations{

@@ -39,8 +39,12 @@ Fp8LinearRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows, 
         return tokens >= 12 ? Fp8LinearRoute::A8 : Fp8LinearRoute::A16;
     case Fp8Problem::GdnInput:
         return tokens >= 11 ? Fp8LinearRoute::A8 : Fp8LinearRoute::A16;
+    // The T=1 decode route for the MLP gate/up parent is A8; every token count uses A8 so MTP
+    // verification (T = draft_tokens+1 <= 4) reproduces the T=1 route bit-for-bit per committed
+    // column (model-doc 8). The A8 MMA is T-independent per column (sequential K, one warp per
+    // token-row block) and its activation quantization is per-token.
     case Fp8Problem::MlpGateUp:
-        return tokens == 1 || tokens >= 5 ? Fp8LinearRoute::A8 : Fp8LinearRoute::A16;
+        return Fp8LinearRoute::A8;
     case Fp8Problem::Vocabulary:
         return Fp8LinearRoute::A16;
     case Fp8Problem::Residual6144:
@@ -72,7 +76,7 @@ void launch_a16(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t
     }
 }
 
-bool interval_uses_a8(Fp8Problem problem, LinearPolicy policy, std::int32_t min_tokens,
+bool interval_uses_a8(Fp8Problem problem, LinearPolicy policy, std::int32_t /*min_tokens*/,
                       std::int32_t max_tokens) {
     if (policy == LinearPolicy::A16Only) { return false; }
     switch (problem) {
@@ -81,7 +85,7 @@ bool interval_uses_a8(Fp8Problem problem, LinearPolicy policy, std::int32_t min_
     case Fp8Problem::GdnInput:
         return max_tokens >= 11;
     case Fp8Problem::MlpGateUp:
-        return min_tokens == 1 || max_tokens >= 5;
+        return true;
     case Fp8Problem::Vocabulary:
         return false;
     case Fp8Problem::Residual6144:
