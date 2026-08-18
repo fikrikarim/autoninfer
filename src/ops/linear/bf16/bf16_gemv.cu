@@ -33,6 +33,14 @@ void launch_bf16_decode(const Tensor& x, const Weight& weight, Tensor& out, cuda
         launch_geometry<Bf16GemvGeometry<5120, 6144>>(x, weight, out, stream);
         return;
     }
+    if (weight.n == 5120 && weight.k == 25600) {
+        launch_geometry<Bf16GemvGeometry<5120, 25600>>(x, weight, out, stream);
+        return;
+    }
+    if (weight.n == 2048 && weight.k == 5120) {
+        launch_geometry<Bf16GemvGeometry<2048, 5120>>(x, weight, out, stream);
+        return;
+    }
     throw std::invalid_argument("bf16 linear decode: unsupported exact problem");
 }
 

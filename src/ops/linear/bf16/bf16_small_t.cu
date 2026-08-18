@@ -36,10 +36,16 @@ constexpr auto make_launchers(std::index_sequence<Offsets...>) {
 
 using ControlGeometry = Bf16GemvGeometry<14336, 5120>;
 using OutputGeometry  = Bf16GemvGeometry<5120, 6144>;
+using DSparkFcGeometry = Bf16GemvGeometry<5120, 25600>;
+using DSparkKvGeometry = Bf16GemvGeometry<2048, 5120>;
 
 constexpr auto kControlLaunchers = make_launchers<ControlGeometry>(
     std::make_index_sequence<kBf16SmallTMaxTokens - kBf16SmallTMinTokens + 1>{});
 constexpr auto kOutputLaunchers = make_launchers<OutputGeometry>(
+    std::make_index_sequence<kBf16SmallTMaxTokens - kBf16SmallTMinTokens + 1>{});
+constexpr auto kDSparkFcLaunchers = make_launchers<DSparkFcGeometry>(
+    std::make_index_sequence<kBf16SmallTMaxTokens - kBf16SmallTMinTokens + 1>{});
+constexpr auto kDSparkKvLaunchers = make_launchers<DSparkKvGeometry>(
     std::make_index_sequence<kBf16SmallTMaxTokens - kBf16SmallTMinTokens + 1>{});
 
 } // namespace
@@ -52,6 +58,14 @@ void launch_bf16_small_t(const Tensor& x, const Weight& weight, Tensor& out, cud
     }
     if (weight.n == OutputGeometry::kOutputRows && weight.k == OutputGeometry::kInputRows) {
         kOutputLaunchers[index](x, weight, out, stream);
+        return;
+    }
+    if (weight.n == DSparkFcGeometry::kOutputRows && weight.k == DSparkFcGeometry::kInputRows) {
+        kDSparkFcLaunchers[index](x, weight, out, stream);
+        return;
+    }
+    if (weight.n == DSparkKvGeometry::kOutputRows && weight.k == DSparkKvGeometry::kInputRows) {
+        kDSparkKvLaunchers[index](x, weight, out, stream);
         return;
     }
     throw std::invalid_argument("bf16 linear small-T: unsupported exact problem");

@@ -189,6 +189,7 @@ set(ninfer_op_tests
   argmax
   gdn_gating
   gdn_gating_proj
+  dspark_ctx_commit
   rope
   vision_pos_embed
   vision_attention
