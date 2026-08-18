@@ -305,3 +305,8 @@ Seeds, not a mandate; profile first. Ranked by expected end-to-end impact:
     iteration's only inherited context) and `docs/autoninfer/BLOCKERS.md` (the single
     user-facing point for anything needing a human; the loop stops itself and records there
     on unrecoverable states).
+  - **Driver stdin bug fixed (caught pre-launch):** supervisor children get stdin as an event
+    pipe that never EOFs, and `pi -p` reads piped stdin before starting the agent loop - every
+    iteration hung before its first model call (alive process, no session file, no connection
+    to the serve). Fix: `< /dev/null` on the pi invocation. Lesson for any future headless pi
+    under supervisor: always redirect stdin.
