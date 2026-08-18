@@ -3,107 +3,152 @@
 Rewritten at the end of every iteration; the next iteration's only inherited context.
 Keep it complete and concise.
 
-**Updated:** 2026-08-18 by the unattended driver iteration (MTP head A/B experiment).
+**Updated:** 2026-08-18 by the unattended driver iteration (MTP draft-window A/B + losslessness bug found).
 
 ## State
 
-- HEAD: `855acadd` (chore: gitignore `.env` — from the interactive session, below). This iteration's
-  experiment record is `fb49a024` (child of `59f9e54d`, the commit under test — engine code
-  identical at all three). Confirm the chain with `git log --oneline -5`.
-  Working tree: this file's commit; untracked `tools/autoninfer/exa_{search,content}.sh`
-  belong to the interactive session — leave them alone.
-- **Concurrent session (awareness):** an interactive `pi` TUI (pid 21662, up since 08:22, user-owned)
-  is working in this repo alongside the driver: it committed `18b4b674` (stdin-bug changelog note)
-  and `855acadd` (.gitignore) on top of the driver's commits, and is researching MTP acceptance
-  via the Exa API. Its commits and untracked files are expected; the driver's serve-op deferral
-  detects it. Do NOT kill it (interactive = user's). Avoid GPU 1 contention: check
-  `nvidia-smi` shows no other compute app before any bench, and if the interactive session is
-  mid-experiment, prefer waiting (its work is uncommitted and could conflict on `handover.md`).
+- HEAD: `4f3bc6d9` (feat: 5-min serve pending timeout, from the interactive session). Engine decode
+  path is code-identical to the `59f9e54d` baseline for everything under test (commits since are
+  docs/tools/serve-timeout only). Confirm with `git log --oneline -5`. Working tree: clean after
+  this iteration's commit (results row + this file).
+- **Concurrent interactive session (awareness):** still expected (committed `556c67fe` quality gate
+  + EXA tooling, `4f3bc6d9` serve timeout). Do NOT kill it. It owns `tools/autoninfer/quality_gate*.sh`
+  and `.env` (EXA key — never commit). Check `nvidia-smi` before any bench.
 - Baseline M1 (tg128, `--lm-head-draft`, INT8 KV, MTP3): **111.42 ± 0.05 tok/s, 27.14% accept,
-  1.803 tok/round, per-position 105/51/15 of 213 rounds** — reproduced this iteration at
-  `59f9e54d` (original baseline 111.82 ± 0.07 @ 27.1%). This is the keep/discard reference.
+  1.803 tok/round** — re-confirmed this iteration at `4f3bc6d9` as **111.79 ± 0.07 tok/s,
+  27.14% accept, 213 rounds** (fresh, same command). This is the keep/discard reference.
 - Serve: still the loose process on GPU 0 (supervisor `ninfer-serve` STOPPED; `/v1/models` up).
   `{"action":"restart-primary"}` remains queued in `/tmp/autoninfer-ops/pending.json`; the driver
-  applies it between iterations. Wrappers (live `/opt/supervisor-scripts/ninfer-serve*.sh` +
-  repo copies `tools/autoninfer/supervisor/`) are back at the canonical flags
-  (`--spec mtp --draft-tokens 3 --lm-head-draft`, pinned 262144 ctx/KV) — this iteration
-  changed them and restored them; they stayed in sync throughout.
-- GPU 1: HEALTHY this session (triad 1466.9 GiB/s, FMA 110.71 TFLOP/s).
-- `results.tsv`: 2 experiment rows (baseline keep; head A/B discard).
+  applies it between iterations. Wrappers unchanged this iteration (canonical flags:
+  `--spec mtp --draft-tokens 3 --lm-head-draft`, pinned 262144 ctx/KV).
+- GPU 1: HEALTHY (triad ~1466 GiB/s, FMA ~110.7 TFLOP/s). All my temp serves ran on GPU 1 and
+  are torn down; `nvidia-smi` shows only the GPU 0 serve.
 
-## This iteration — hypothesis #1 (MTP acceptance): head A/B, DISCARD
+## This iteration — draft-window A/B + a LOSSLESSNESS BUG (top priority)
 
-Per-position acceptance (tg512, 756 rounds, optimized head): **447/237/93** → pos1 59.3%,
-pos2 31.4%, pos3 12.3% (conditional 59→53→39%). Gradual decay along the AR chain, no position
-collapses to zero → no positional KV/AR bug signature; the one-step draft quality itself is weak.
+### A/B: MTP `--draft-tokens` k=2 vs canonical k=3 (measured)
 
-A/B `--lm-head-draft` (131,072-token shortlist head) vs full head (248,320), same corpus:
-
-| menu | optimized | full | Δ |
+| menu | k=3 (canonical) | k=2 | Δ |
 |---|---|---|---|
-| tg128 (M1) | 111.42 ± 0.05 tok/s, 27.14% accept, 213 rounds | 105.16 ± 0.09 tok/s, 28.78% accept, 207 rounds | **full −5.6% tok/s** |
-| tg512 | 125.04 ± 0.25 tok/s, 34.35% accept, 756 rounds, 3 fallbacks | 128.13 ± 0.10 tok/s, 42.64% accept, 675 rounds, 0 fallbacks | full +2.5% tok/s |
+| M1 tg128 | 111.79 ± 0.07 tok/s, 27.14% accept, 1.803 tok/round | **116.52 ± 0.23 tok/s**, 37.93% accept, 1.753 tok/round | **k=2 +4.2%** |
 
-Mechanism: the full head's 248,320-row FP8 output GEMV (~1.27 GB read per draft step) is
-bandwidth-bound and costs ~1.5 ms/round more than the 131,072-row shortlist head (~672 MB).
-tg128's low-predictability random-seed content gives only +2.9% tokens/round (1.855 vs 1.803) —
-not enough to amortize; tg512's settled content gives +12% (2.276 vs 2.028) — enough. M1 is the
-protocol metric, so the canonical config keeps `--lm-head-draft`. Output is unaffected by either
-setting (exact target verification, `include/ninfer/ops/speculative_round.h`) — speed-only A/B,
-no parity check needed. Committed: record only (README changelog, results row, this file);
-wrappers and menu unchanged.
+k=2 removes the weak pos3 draft (per-position tg128: pos1 50.7%/pos2 24.7% are identical across k;
+only pos3 7.0% is dropped) while the round shrinks 16.13→15.05 ms (−6.7%) faster than tok/round
+drops (−2.7%) → net M1 win. **DECISION: keep k=3 canonical** — the real-corpus comparison is
+INVALID (see bug) and the MTP output quality is untrusted until the bug is fixed. Re-run this A/B
+after the fix.
 
-## Next experiment — MTP layer one-step quality (the binding constraint)
+### THE BUG: greedy (temp 0) MTP decode is NOT lossless — streams diverge across k
 
-Even the full head reaches only pos1 58.0% (tg128) / 68.0% (tg512) vs the offline
-teacher-forced single-step oracle of **0.835** on real text
-(`tools/freq_corpus/fixtures/ranking/accept.heldout.manifest.json`; construction in
-`tools/convert/qwen3_6_27b/draft_head.py`). No head choice fixes the draft layer's one-step
-quality — that is the acceptance lever (each +10 pt pos1 ≈ +10% tok/s at fixed round cost).
+Contract (docs/maintainer/qwen3.6-27b-model.md §8): "A bad draft … must not change the
+distribution of emitted target tokens." At temp 0 the distribution is a delta at the target
+argmax, so **k=0/1/2/3 must all emit the identical stream** for a fixed prompt+seed. They do not.
 
-Concrete first steps (audit before touching code):
+Measured (AIME fixture `long_decode_aime26_01`, 1024 tok, `--greedy --seed 42`, GPU 1):
 
-1. Read the MTP layer forward: `src/targets/qwen3_6/impl/runtime/text_context_impl.h`
-   (`mtp_forward_core`, `mtp_forward_stem`, `mtp_forward_ar_step`) and `mtp_impl.h`
-   (`mtp_decode_batch_body` — note the `alignment_hidden` → `ar_hidden` handoff via
-   `speculative_select_accepted_hidden`).
-2. Check dtype/precision of each MTP-stage input against the target layer it approximates:
-   - hidden-state handoff from the target's final layer (is it the pre-final-norm post-mixer
-     output, BF16, selected from the *verified* column — a wrong-column or dropped-norm handoff
-     would look exactly like weak one-step quality);
-   - MTP `input_projection` + token embedding path (what does this artifact store — check
-     `src/targets/qwen3_6_27b/impl/load/bindings.cpp` and `docs/maintainer/qwen3.8-27b-artifact.md`);
-   - MTP KV cache dtype: `state.mtp_kv`/`mtp_cache` (INT8 like text KV? check layouts around
-     `layouts_impl.h:312/499`);
-   - MTP attention: single-layer cached GQA (`ops::gqa_attention_cached`) — envelope/visible
-     positions correct for the AR steps?
-3. Numeric spot check: for one fixed prefix, compare the MTP layer's one-step logits (full-head
-   argmax distribution over a few positions) against the target model's own next-token
-   distribution at the same positions (the draft should be a *weaker* but *aligned* predictor —
-   rank correlation on top-32 tokens is the quick diagnostic; a large disagreement means a
-   handoff/precision bug, a uniformly soft one means quantized draft weights are the ceiling).
-4. Only if the path is at natural artifact precision: re-test the head swap on a real-text
-   corpus via `tools/bench/run_serve_corpus.py` (long AIME-like streams) to decide the
-   product-regime configuration (tg512 suggests full head wins there).
+| config | hash | notes |
+|---|---|---|
+| k=0 (no MTP) | `c38d794e` | pure target greedy (reference stream) |
+| k=1 | `1607489d` | diverges from k=0 at char 1118/2106 |
+| k=2 | `d5f86e04` | diverges from k=0 at char 530/2106 |
+| k=3 | `94aaa802` | diverges from k=0 at char 530/2106 |
+| k=3 eager (`--no-cuda-graph`) | `cdc8b2ee`@512 | **== k=3 graph** (graph path is faithful) |
 
-Keep/discard criterion: M1 `tg128` on the fixed menu vs 111.42 baseline; per-position acceptance
-is the diagnostic. Do not change sampling semantics (the accept op is exact; keep it that way).
+- Same-k is fully deterministic (k=3 auto-seed ×2 and k=3 `--seed 42` all hash-identical) →
+  the divergence is **k-dependent, not seed/RNG**.
+- Every k>0 produces its OWN distinct corrupted stream, and each diverges from the true k=0
+  stream after a few hundred tokens → a **small persistent state perturbation** that occasionally
+  flips the target argmax, not a hard logic fault (acceptance rates stay healthy: tg128 k=3
+  per-position 105/51/15 of 213; AIME k=3 288/256/226 of 312 rounds).
+
+**Isolated:** eager ≡ graph (identical hashes) → NOT a CUDA Graph capture/replay issue. The bug is
+in the **shared MTP decode transaction** (the k>0 verify+accept+fold+trim path), affecting all k>0.
+
+**Ruled out by inspection (do NOT re-derive these; they are correct):**
+- `speculative_accept_greedy_drafts` greedy branch (`src/ops/kernel/speculative_round.cuh:72`):
+  commits the longest matching draft prefix + target argmax at the divergence column — exact.
+- GDN fold count (`program_impl.h:711` `resolve_pending_batch`): `commit_columns = licensed_counts
+  = accepted+1` — correct. The "live state is one committed token behind" (missing the round's
+  correction, which becomes next round's anchor) is **by design and correct by induction** — the
+  anchor's transition is folded each round as record[0].
+- KV trim (`program_impl.h:~820` `text_kv_valid = base_E + committed`): trims to exactly the
+  committed positions — correct.
+- `speculative_prepare_verify_inputs` (`include/ninfer/ops/speculative_round.h`): verify_ids =
+  [anchor, d0..d_{k-1}], positions = base + min(j, Pcur) — correct.
+
+**LEADING HYPOTHESIS (not yet confirmed — this is the task):** k=0 uses the **in-place** GDN
+recurrent path (width-1 decode, `gdn_input_proj_conv_snapshot` in-place mode); k>0 uses the
+**ReplaySSM record + fold** path (`gdn_input_proj_conv_record` during verify + `gdn_replay_fold`).
+These are **two different code paths**. If the record+fold GDN state is not **bit-exact** with the
+in-place state (the round-trip stores BF16 conv/key/value + FP32 {g,beta} records, then re-derives
+the FP32 recurrent state; a different accumulation order or a precision round-trip would make it
+close-but-not-equal), then the target logits computed from the folded state occasionally differ from
+the true argmax → the greedy stream flips. This single mechanism explains ALL observations
+(k=0≠all k>0; k=1/2/3 mutually distinct because window width changes the GDN verify computation;
+divergence only after hundreds of tokens; healthy acceptance). The GDN is the only recurrent
+(stateful) layer family, so it is the prime suspect.
+
+**Concrete first steps (do these in order):**
+1. **Confirm the hypothesis with a GDN state bit-comparison** — the decisive test. Run the same
+   committed token prefix through both paths and dump the FP32 recurrent state after the update:
+   - Path A (in-place): a k=0 ordinary decode of the prefix.
+   - Path B (record+fold): a k>0 speculative round committing the same prefix.
+   Compare the all-layer GDN FP32 recurrent states at the same position. Any mismatch localizes
+   the bug to the record/fold round-trip. (Look for an existing state-dump/tap hook first — the
+   reference `tools/reference/qwen3_6_27b` has a `tap` mechanism; the engine may have a similar
+   debug path. `grep -rn "tap" src/targets/qwen3_6/impl/runtime/text_context_impl.h`.)
+   If no hook exists, the cheapest is a focused unit test under `tests/` that drives
+   `ops::gdn_replay_fold` and the in-place `gated_delta_net` recurrence on the same record and
+   asserts bit-equality of the resulting FP32 state.
+2. **If confirmed, read the exact round-trip** to find the precision/ordering loss:
+   - record write: `src/ops/gdn_input_proj/q4_q5/q4_q5_gdn_input_conv_snapshot.cu` (conv record)
+     + `src/ops/linear_attention/gated_delta_net/recurrent.cu` (recurrent record mode);
+   - fold read/re-derive: `src/ops/linear_attention/gated_delta_net/replay.cpp`
+     (`gdn_replay_fold`); record layout `src/core/gdn_replay_records.{h,cpp}`.
+   The fix is to make the fold reproduce the in-place FP32 state exactly (same op ordering /
+   no lossy round-trip), per the doc's "algebraically equivalent" requirement.
+3. **After the fix, re-verify losslessness** (the acceptance gate for this bug): k=0/1/2/3 must
+   all produce the SAME hash on the AIME fixture (`--greedy --seed 42`, GPU 1). Reusable harness
+   (writes to /tmp, re-create if gone): boot `./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer
+   --host 127.0.0.1 --port 8091 --max-context 16384 --kv-dtype int8 --max-concurrency 1 --greedy
+   --seed 42 [--spec mtp --draft-tokens K --lm-head-draft]` with `CUDA_VISIBLE_DEVICES=1`, POST the
+   AIME message to `/v1/chat/completions` (max_tokens 1024), hash `reasoning_content+"\n@@\n"+content`.
+   Then re-run M1 (must still be ~111.8 @ k=3) and the k=2 A/B.
+4. **Do NOT change sampling semantics** to "fix" this — the fix must make the folded state
+   bit-exact, not loosen the accept op.
+
+### Quality-gate coverage gap (methodology note — record, don't fix this iteration)
+
+`tools/autoninfer/quality_gate.sh` boots a serve at a **fixed** `--draft-tokens 3` and hashes that
+k=3 greedy stream. Because the k=3 stream is self-consistent (deterministic), the gate shows
+"zero diff" across runs and **cannot detect** (a) the MTP-vs-no-MTP (k=0) divergence above, or
+(b) any change to the non-MTP (k=0) path. For the "pure perf change must be token-identical" rule,
+a k=0-path change would pass the gate invisibly. When the losslessness bug is fixed the gap
+narrows (k=0==k=3), but until then treat gate "zero diff" as necessary, not sufficient, for
+quality. (The interactive session owns the gate; coordinate before changing it.)
+
+## Next experiment — ROOT-CAUSE the MTP losslessness bug (hypothesis above, step 1)
+
+This is a **product-correctness** defect and outranks all performance backlog: the north star is
+"faster at EQUAL or better quality," and the MTP path currently changes greedy output. Do step 1
+(the GDN state bit-comparison) first — it is the decisive, cheap test and either confirms the
+leading hypothesis (→ step 2 fix) or rules it out (→ profile the verify/fold path with nsys/ncu
+on a single round to find where the k>0 state diverges from k=0).
 
 ## Do not repeat / watch out
 
-- Do NOT flip the canonical config to full head on tg512 evidence alone — M1 (tg128) is the
-  protocol metric and full head regresses it 5.6%. Any future flip needs real-corpus evidence
-  and a menu-update commit in the same change.
-- If you edit a serve wrapper, keep the live `/opt/supervisor-scripts/` file and its repo copy
-  in sync, and queue `{"action":"restart-primary"}`; never restart/touch the GPU 0 serve from an
-  iteration (hard rule — driver owns it between iterations).
-- Never start or leave the standby serve running.
-- tg512 acceptance (34.4% optimized) > tg128 (27.1%): the first ~128 tokens after the one-token
-  seed are low-predictability content. Use tg512 for acceptance diagnostics, tg128 (M1) for
-  keep/discard.
-- Do not compare generic-corpus M1 to the published AIME-stream numbers (corpus effect).
-- 35B-A3B and 27B groupwise-int artifacts are not present locally (`models/` has only
+- **The AIME tok/s comparison from the A/B (k=3 214 vs k=2 184 tok/s) is INVALID** — the two
+  streams differ (bug), so it is not apples-to-apples. Discard those numbers; re-measure after the
+  fix. Only the M1 tg128 A/B (111.79 vs 116.52) is a valid same-corpus measurement.
+- Keep k=3 canonical until the bug is fixed; do NOT flip to k=2 on the M1 +4.2% alone (the real-
+  corpus evidence is corrupted and the output quality is untrusted).
+- Do NOT re-derive the ruled-out items above (accept kernel, fold count, KV trim, verify_ids) —
+  they are verified correct; the bug is in the GDN record+fold round-trip (leading hypothesis).
+- Never restart/touch the GPU 0 serve from an iteration (hard rule — driver owns it); queue
+  `{"action":"restart-primary"}` for flag changes. Never start/leave the standby serve.
+- GPU 1: run every GPU workload with `CUDA_VISIBLE_DEVICES=1`; `bash tools/gpu_health.sh 1` first.
+- 35B-A3B / 27B groupwise-int artifacts absent locally (`models/` has only
   `qwen3_8_27b_nvfp4.ninfer`) — hypotheses needing them are out of reach.
-- Bench JSON reports for this iteration: `/tmp/mtp_per_position.json` (tg512 optimized),
-  `/tmp/mtp_per_position_fullhead.json` (tg512 full), `/tmp/m1_fullhead_tg128.json`,
-  `/tmp/m1_lmhead_tg128_rerun.json`.
+- Bench JSONs this iteration: `/tmp/m1_k2_tg128.json` (k=2 tg128), `/tmp/det_k{0,1,2,3}_s42.json`
+  + `/tmp/det3_k{0,3}_g{0,1}.json` (losslessness hashes), `/tmp/aime_req_k{2,3}.jsonl` (request
+  logs with per-position acceptance). `/tmp` is cleared on reboot — re-run the harness if gone.
