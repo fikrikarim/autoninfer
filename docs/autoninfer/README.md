@@ -152,7 +152,13 @@ would contend without adding throughput.
 3. **Correctness first.** Numerical changes pass the affected explicit tests (see `tests/README.md`)
    under the oracle rules of `AGENTS.md` before they are measured.
 4. **One hypothesis per commit.** Commit before measuring; the results row references the commit.
-5. **Record everything.** Every experiment — keep, discard, or crash — gets a `results.tsv` row.
+5. **Record everything.** Every experiment — keep, discard, or crash — gets a `results.tsv` row:
+   `commit  metric  status  description`. The `description` cell is a **one-line summary**
+   (keep it ≤ ~200 characters: what changed, the measured delta, the keep/discard reason). The
+   full attribution/narrative belongs in the git commit message and `handover.md`, **not** the
+   TSV cell — the TSV must stay a skimmable 4-column table. (Historical rows from 2026-08-18
+   pre-date this rule and carry long descriptions; their full text is also in the commit
+   messages.)
 6. **Push cadence.** Push after every kept change (and after informative discards), so progress
    survives an instance recycle. Never push `models/` or `build/` (and never `.env` — git-ignored,
    holds the EXA key).
