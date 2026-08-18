@@ -1,46 +1,46 @@
 # Autoninfer handover
 
-**Last updated:** 2026-08-18 ~19:57 UTC by unattended driver session.
-**This iteration's result: MTP k=4 full-head draft A/B — full head = 129.28 tok/s, 8.0% SLOWER than lm-head 140.36; token-identical (gate 8/8). DISCARD full-head; k=4 stays lm-head (still ratify-pending).**
+**Last updated:** 2026-08-18 ~21:20 UTC by unattended driver iteration 14.
+**Result this iteration: DSpark Op 2 (`dspark_ctx_commit`) LANDED — committed `1abe9a8f`, op test green on GPU 1. Tree clean.**
 
 ## HEAD & state
-- **HEAD:** `d954ae42` + this iteration's docs commit (results row + BLOCKERS addendum + handover; no code). Tree otherwise clean except the session's DSpark WIP (below).
-- **Canonical baseline M1 (k=3, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (82ef8337). Same-session re-measure: k=3 113.93 ± 0.26 (use same-session pairs for A/B deltas).
-- **Pending candidate (user ratification OPEN, BLOCKERS 19:55 row):** k=4-lm-head = `140.36 ± 0.53 tok/s, 33.8% accept, 165 rounds` = +23.2% vs same-session k=3. This iteration confirmed **lm-head is the right head at k=4** (full-head loses, see below). k=3 stays canonical until the user says yes on k=4.
-- GPU 1 HEALTHY at 19:51 (triad 1466.3 GiB/s, FMA 111.28 TFLOP/s). All GPU work on GPU 1.
+- **HEAD:** `1abe9a8f` (Op 2 landing) + this iteration's docs commit (results row + handover). Tree clean.
+- **Canonical baseline M1 (k=3, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (82ef8337). Same-session A/B refs (valid): k=3 113.93 / k=4-lm-head 140.36 / k=5 138.33.
+- **Two open user decisions (BLOCKERS, neither ratified yet — k=3 stays canonical, no config change):**
+  1. 19:55 row: ratify MTP **k=4-lm-head** as canonical (+23.2% M1, 140.36; near-tie-class gate). If yes → flip serve wrappers (`--draft-tokens 4`, both copies `tools/autoninfer/supervisor/ninfer-serve.sh` + `/opt/supervisor-scripts/ninfer-serve.sh`), README M1 menu + baseline, `quality_gate.sh` canonical SPEC_ARGS (MTP3→MTP4), fresh M1+gate re-baseline, fresh `restart-primary` op (manual serve pid 21537 runs k=3 flags today).
+  2. 17:45 row: ratify closing the MTP losslessness series (k>0 = accepted near-tie class).
+- GPU 1 HEALTHY at 21:04 (triad 1467.1 GiB/s, FMA 111.25 TFLOP/s). All GPU work this iteration on GPU 1.
+- Interactive session **pid 21662**: alive but idle (cputime frozen 1:17:40 since ~19:22, no child processes at 21:00). Its DSpark WIP is now **committed** (below) — nothing of it remains in the tree. Do not kill it; `restart-primary` stays deferred while it lives.
+- `/tmp/autoninfer-ops/pending.json` still holds `{"action":"restart-primary"}`. Do NOT re-queue.
+- No background jobs (bg.sh ledger empty).
 
-## What was done (one experiment: k=4 full-head draft A/B, config-only)
-**Why (handover step 2):** the only prior full-head A/B was at k=3 pre-bit-exact and stale (105.16 regression = ~1.5 ms/round of the 248K-row FP8 full-head GEMV at 3 draft steps). At k=4 (4 draft steps, pos2 accept 41.8%) the economics might invert — full head gives better one-step draft quality. Head choice is speed-only (target verify is exact) ⇒ **token-identical requirement**: gate diff vs the k=4-lm-head reference must be zero.
-**Method (no build, no collision with session WIP):** reused the committed-source worktree binary `/tmp/wt-it13` @ `18198e78` (same binary that produced the 140.36 reference). M1 Run B = `CUDA_VISIBLE_DEVICES=1 /tmp/wt-it13/build/bench/ninfer_bench --weights models/qwen3_8_27b_nvfp4.ninfer -n 128 -r 3 --warmup 1 --max-ctx 16384 --kv-dtype int8 --mtp-draft-tokens 4` (NO `--lm-head-draft` = full head; bench default head is full, `--lm-head-draft` is opt-in). Gate = worktree copy of `tools/autoninfer/quality_gate.sh` (uses `/tmp/wt-it13/build/apps/ninfer-serve`, not the session-owned main build) with `GATE_SPEC_ARGS="--spec mtp --draft-tokens 4"`.
-**Results:**
+## What was done (one experiment: DSpark Op 2 takeover + landing)
+The previous driver iteration (13) had taken over the session's converged DSpark Op 2 WIP (protocol: 30+ min no writes, session idle) and was mid-debug (RoPE scatter mismatches vs oracle) when it hit the 3600s timeout at 20:56, leaving the tree dirty and unverified. This iteration continued and finished the takeover:
+1. **Diagnosed where iter 13 died:** its /tmp evidence (`/tmp/it15_{lines,errs}.txt`, `/tmp/it14_*` probes/backups) showed it had (a) fixed the kernel's RoPE lane coverage, (b) re-criterion'd the test K/V vs the FP64 oracle under the kernel's BF16 materialization profile (measured max |err| 0.041 K / 0.031 V, ~2x margin in criteria), (c) added the missing stream sync for legacy-stream H2D input prep — but never re-ran the test.
+2. **Rebuilt clean** (`cmake --build build -j`, green) and ran on GPU 1:
+   - `ninfer_dspark_ctx_commit_test` **green** — YaRN table bit-exact vs transformers 5.12.1; commit correctness T=1..128 (small-T + MMA linear routes, base/append position layouts), K/V vs FP64 oracle under the documented profile.
+   - `ninfer_linear_bf16_a16_test` + `ninfer_linear_add_bf16_a16_test` **green** (the WIP's 2 new BF16 linear shapes: 5120×25600 fc, 2048×5120 kv — also exercised end-to-end by the op test via `ops::linear`).
+3. **Stripped** the leftover `#include <cstdio>` in `dspark_kv_rope_scatter.cu` (debug remnant; no other TEMP/debug in the WIP), rebuilt, re-ran the op test (green), **committed `1abe9a8f`** and pushed.
 
-| config | M1 tok/s (±std) | rounds | accept | accept_len | per-position accept |
-|---|---|---|---|---|---|
-| k=4 **lm-head** (ref, 140.36) | 140.36 ± 0.53 | 165 | 33.80% | 2.327 | 111/69/24/15 |
-| k=4 **full-head** (this run) | **129.28 ± 0.14** | 159 | 36.06% | 2.415 | 111/72/27/15 |
+Op 2 = draft-context commit (lane doc §4): taps [25600,T] → fc GEMM → hidden RMSNorm(1e-6) → per-layer kv GEMM → fused per-head k_norm + split-half YaRN rotation (attention factor folded into cos/sin) + draft-KV arena scatter; V scatters bit-exactly, K takes one final BF16 rounding. **Engine-unwired** (no arena/allocation/backend yet) → no M1 impact.
 
-- **Full-head is 8.0% SLOWER** (129.28 vs 140.36) despite HIGHER acceptance (accept_len 2.415 vs 2.327, fewer rounds 159 vs 165). The 248K-row full-head GEMV ×4 draft steps costs more per round than the extra accepts save. **Hypothesis falsified — the k=3 inversion does not happen at k=4; lm-head shortlist stays the speed win.**
-- **Token-identity (required check): PASSED.** Gate k=4 full-head per-prompt hashes are **8/8 IDENTICAL** to the k=4 lm-head reference (`post-k4ab`, overall 2f20d7d7): math-balls a53d700d, code-neighbor-sum 354c7843, translate-fr 75882ce5, logic-bulbs c96137af, math-modexp 459c4b77, summarize b834a21f, code-c-bug 34a5e319, haiku 33a65c45. (The gate OVERALL hash differs only because its blob includes the per-prompt `seconds` timing field — the decoded-text hashes, which is the quality signal, match exactly.) Confirms head choice is speed-only.
-- **Decision: DISCARD full-head k=4.** k=4-lm-head (140.36) remains the pending candidate. No config change committed. BLOCKERS 19:55 row got a 19:56 addendum (if k=4 ratified → lm-head stays the head; no separate decision).
-
-## /tmp evidence (this iteration)
-- `/tmp/it13b_m1_k4.json` (M1 full-head report), `/tmp/it13b_run.log` (bench transcript).
-- `/tmp/quality_gate_post-k4-fullhead.jsonl` + `/tmp/it13b_gate.log` + `/tmp/quality_gate_post-k4-fullhead.serve.log` (k=4 full-head gate; diff vs `/tmp/quality_gate_post-k4ab.jsonl` = 8/8 per-prompt identical).
-- Reference (previous iteration): `/tmp/it13_m1_k4.json` (140.36), `/tmp/quality_gate_post-k4ab.jsonl` (lm-head k=4 gate).
-- `/tmp/wt-it13` = worktree @ 18198e78 with the committed-source binary — **kept** for the next config A/B / k=4 flip; remove with `git worktree remove /tmp/wt-it13 --force` once done.
-
-## Session WIP (live owner — do not touch the files)
-- **pid 21662** (pts/6, herdr-daemon-held tty) ALIVE; CPU-idle (cputime frozen 1:17:40 since ~19:22). Last WIP write **18:55:35** (~59 min at check) → **converged (30+ min no writes)**; take-over is permitted per protocol but was NOT exercised this iteration (experiment completed).
-- WIP = **DSpark Op 2 (`dspark_ctx_commit`) + BF16 linear support** (the `943713c0` handover's next step, which the session took over): `src/ops/dspark_ctx_commit/{dspark_ctx_commit.cpp, dspark_kv_rope_scatter.cu, dspark_launch.h, dspark_yarn.cpp}`, `include/ninfer/ops/dspark_ctx_commit.h`, `tests/ops/test_dspark_ctx_commit.cpp`, `src/ops/linear/bf16/{bf16_dispatch.cpp, bf16_gemm_mma.cu, bf16_gemv.cu, bf16_small_t.cu}`, `src/CMakeLists.txt`, `tests/CMakeLists.txt`.
+## DSpark lane status (docs/maintainer/qwen3.8-27b-dspark-lane.md is the authority)
+- Section artifact: done+verified (`out/dspark_27b.ninfer`, 47 objects, round-trip bit-exact; `tools/convert/qwen3_6_27b/dspark.py` @ 943713c0).
+- **Op 2: LANDED (this iteration).** Op 1 (`dspark_tap_capture`, target-side transient store at layers 4/16/28/40/52), Op 3 (`dspark_block_decode`, the 5-layer draft-GQA decode — the big one; note its T=7 verify columns must be per-column T=1 bit-clones per the losslessness rule), Op 4 (`dspark_markov_logits`), the persistent draft-KV arena + round-graph engine wiring: all remaining. Adoption is a product-identity change → BLOCKERS ratification after E2E measurement.
 
 ## Next iteration (single next step)
-1. **If the user ratified the k=4 row** (check BLOCKERS.md active section): flip canonical to k=4-lm-head — wrappers `--draft-tokens 4` (both copies: `tools/autoninfer/supervisor/ninfer-serve.sh` + `/opt/supervisor-scripts/ninfer-serve.sh`), README M1 menu row (`--mtp-draft-tokens 3`→`4`), README baseline section (113.01→140.36), `quality_gate.sh` canonical `SPEC_ARGS` (MTP3→MTP4), fresh M1 + gate re-baseline, fresh `restart-primary` op (the manual serve pid 21537 also needs the new flag). Do NOT flip without an explicit yes.
-2. **Otherwise (expected): DSpark Op 2 take-over** (backlog #1, the session's lane). Check `ps -o pid,stat,cputime -p 21662` + WIP file mtimes first. If the session is gone OR the WIP still has 30+ min no writes (converged) → take it over per protocol: build in the **main tree** (`cmake --build build -j`), run `test_dspark_ctx_commit` (GPU 1), strip any TEMP debug code, commit + push. The DSpark lane doc §4 (see `943713c0`) is the Op 2 contract. If the session has resumed writing (mtimes advancing) → do NOT take over; instead run a small non-colliding config A/B (e.g. reuse `/tmp/wt-it13` for another head/window probe) or the k=2/k=3 re-confirm, and re-check DSpark Op 2 next iteration.
-   - DSpark lane status: weights complete+verified (2.72 GiB, 47 objects, round-trip bit-exact; `out/dspark_27b.ninfer`). Op 2 = `dspark_ctx_commit` + draft-KV arena.
+1. **DSpark Op 1 — `dspark_tap_capture`** (chosen: smallest remaining op, unblocks everything downstream; owned by the target program per lane doc §4):
+   - Read lane doc §4 Op 1 + `src/targets/qwen3_6/impl/runtime/text_context_impl.h` `run_layers`/`mlp_tail` (the PostMixer tails of target layers 0-based 4/16/28/40/52 are the store points).
+   - Implement: conditional store of the post-residual-add layer output `[T,5120]` BF16 into the one-chunk transient tap buffer `[T,5,5120]` (slot order = layer order 4,16,28,40,52), active on prefill (per chunk) and verify (T=8) forwards; inert (no store) when the DSpark backend is not selected. A small dedicated store op under `src/ops` (or fused into the residual-add tail) + exact-store op-level test with the naive oracle.
+   - Since no DSpark engine backend/flag exists yet, gate the store on a workspace/sink that is null unless a DSpark tap sink is bound (design the binding so Op 2 can consume it per chunk per the doc: "projected and freed per chunk — no persistent raw-tap arena"). Keep the store a single coalesced copy per layer.
+   - Build, run the new op test + `ctest -R "qwen3_6"` (regression: the store must be zero-overhead when inert), commit.
+2. Then Op 4 (markov logits — medium, uses the MTP lm-head route extended to T=7) or Op 3 (the big draft-GQA decode) — rank against E2E time-to-measurement at that point.
+3. If the user ratified k=4 (check BLOCKERS first): the flip procedure in "state" above takes precedence.
 
 ## Do not repeat / do not touch
-- Re-measuring M1 at k=3/4/5 lm-head (valid: 113.93 / 140.36 / 138.33) or the k=4 full-head A/B (this iteration: 129.28, discard).
-- The session's WIP file list above while pid 21662 is alive (and `src/CMakeLists.txt` + `tests/CMakeLists.txt`, which are session-dirty).
-- The losslessness / rx-anomaly chain (parked: 17:45 BLOCKERS row + 5d4d6298; evidence in /tmp).
-- The manual serve (pid 21537) and GPU 0 in any way; the FATAL supervisor `ninfer-serve` — no `supervisorctl` on it from research work. No standby serve. Never commit `.env`, `models/`, `out/`.
-- GPU 1: `bash tools/gpu_health.sh 1` before any benchmark session (HEALTHY at 19:51).
+- Re-running the Op 2 test (green on committed source `1abe9a8f`) or the bf16 linear suites; re-measuring M1 k=3/4/5 lm-head (refs above); the k=4 full-head A/B (129.28, discarded).
+- Flipping canonical config (k=4, losslessness closure) without an explicit user yes in BLOCKERS.
+- The manual serve (pid 21537) and GPU 0 in any way; no standby serve; `restart-primary` already pending. Never commit `.env`, `models/`, `out/`.
+- `stash@{0}` (iter-14 rx-dump tap, orphaned) and `stash@{1}` (267414's layer/logit tap) — don't drop either; the parked losslessness chain (BLOCKERS 17:45) can recover evidence from them if ever re-opened.
+- `/tmp/wt-it13` (worktree @ 18198e78, committed-source binaries for config A/B / k=4 flip) — keep until the k=4 decision is settled; `/tmp/wt` (old gdn-fix worktree, discarded fix) — removable any time.
+- GPU 1: `bash tools/gpu_health.sh 1` before any benchmark session.
