@@ -326,6 +326,28 @@ MODEL=/path/to/Qwen3.6-27B
 NINFER_WEIGHTS=out/qwen3_6_27b.ninfer
 ```
 
+## Autoninfer research environment
+
+This checkout is the working environment for **autoninfer**, an agent-driven optimization loop on
+NInfer itself: the pi coding-agent harness is served by the engine it optimizes
+(`~/.pi/agent/models.json` points the `ninfer` provider at `http://127.0.0.1:8080/v1`,
+`qwen3.8-27b`). The protocol, fixed measurement menu, baseline, hypothesis backlog, and changelog
+live in [docs/autoninfer/README.md](docs/autoninfer/README.md); every experiment is logged to
+[docs/autoninfer/results.tsv](docs/autoninfer/results.tsv).
+
+GPU ownership (two RTX 5090s):
+
+- **GPU 0 — reserved for the live `ninfer-serve`** (the harness's own model). Never bind tests,
+  benchmarks, or profilers to it, and never kill or reconfigure its process. If it dies, relaunch
+  it with the exact command recorded in `docs/autoninfer/README.md`.
+- **GPU 1 — the research GPU.** Every test, benchmark, or profiling run targets it:
+  `CUDA_VISIBLE_DEVICES=1`, or `--device 1` for tools that accept a device flag.
+
+`build/` is configured with `-DNINFER_BUILD_BENCHMARKS=ON -DBUILD_TESTING=ON`; rebuild with
+`cmake --build build -j`. The project-local pi extension (`.pi/extensions/autoninfer.ts`) injects
+the live GPU/serve/git snapshot into the agent system prompt and registers `/autoninfer`.
+`models/` holds the large local prerequisite artifacts and is git-ignored.
+
 ## Commits
 
 Create a commit only when the user requests one. Use Conventional Commit-style subjects, for

@@ -133,8 +133,8 @@ binary distribution; NInfer is run from its source build tree.
 ## Build
 
 ```bash
-git clone https://github.com/Neroued/ninfer.git
-cd ninfer
+git clone https://github.com/fikrikarim/autoninfer.git
+cd autoninfer
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -330,6 +330,13 @@ from one to fifteen.
 - Tool calls are parsed and returned to the client; NInfer does not execute tools.
 - The C++ headers are used by the in-tree applications and are not distributed as an installed SDK.
 
+## Autoninfer
+
+This repository is also the working environment for **autoninfer**, an agent-driven optimization
+loop on NInfer itself: the agent harness is served by the engine being optimized. The research
+protocol, environment rules, baseline, hypothesis backlog, and experiment log live in
+[docs/autoninfer](docs/autoninfer/README.md).
+
 ## Documentation
 
 - [Contributing](CONTRIBUTING.md)
@@ -337,6 +344,7 @@ from one to fifteen.
 - [CLI](docs/cli.md)
 - [HTTP serving](docs/serving.md)
 - [Performance](docs/performance.md)
+- [Autoninfer research protocol](docs/autoninfer/README.md)
 - [CLI examples](examples/cli/)
 
 ## License

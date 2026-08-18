@@ -31,6 +31,9 @@ venv/
 out/
 *.log
 
+# Local model artifacts (large; downloaded separately)
+models/
+
 # Measurement raw corpora & intermediates (large; produced by offline tooling).
 # The small final frequency stats under fixtures/ranking/ ARE tracked; the rest is ignored.
 tools/freq_corpus/fixtures/*

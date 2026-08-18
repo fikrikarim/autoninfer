@@ -30,6 +30,7 @@ The executable `--help` output is the exact source for command-line option spell
 - [Tests](../tests/README.md)
 - [Maintainer tools](../tools/README.md)
 - [Capability evaluation](../eval/README.md)
+- [Autoninfer research protocol](autoninfer/README.md)
 
 ## Maintainer references
 
