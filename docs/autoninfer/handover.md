@@ -1,46 +1,47 @@
 # Autoninfer handover
 
-**Last updated:** 2026-08-18 ~21:20 UTC by unattended driver iteration 14.
-**Result this iteration: DSpark Op 2 (`dspark_ctx_commit`) LANDED — committed `1abe9a8f`, op test green on GPU 1. Tree clean.**
+**Last updated:** 2026-08-18 ~21:45 UTC by unattended driver iteration (DSpark Op 1 landing).
+**Result this iteration: DSpark Op 1 (`dspark_tap_capture`) LANDED — committed `9e694ffe`, op test green on GPU 1, M1 unchanged (113.62 vs 113.01 baseline), gate 8/8 token-identical. Tree clean.**
 
 ## HEAD & state
-- **HEAD:** `1abe9a8f` (Op 2 landing) + this iteration's docs commit (results row + handover). Tree clean.
-- **Canonical baseline M1 (k=3, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (82ef8337). Same-session A/B refs (valid): k=3 113.93 / k=4-lm-head 140.36 / k=5 138.33.
+- **HEAD:** `9e694ffe` (Op 1 landing) + this iteration's docs commit. Tree clean.
+- **Canonical baseline M1 (k=3, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (82ef8337). This iteration's same-session M1 at `9e694ffe`: **113.62 tok/s, 30.15% accept** (inert change, as expected). Same-session A/B refs (still valid): k=3 113.93 / k=4-lm-head 140.36 / k=5 138.33.
 - **Two open user decisions (BLOCKERS, neither ratified yet — k=3 stays canonical, no config change):**
-  1. 19:55 row: ratify MTP **k=4-lm-head** as canonical (+23.2% M1, 140.36; near-tie-class gate). If yes → flip serve wrappers (`--draft-tokens 4`, both copies `tools/autoninfer/supervisor/ninfer-serve.sh` + `/opt/supervisor-scripts/ninfer-serve.sh`), README M1 menu + baseline, `quality_gate.sh` canonical SPEC_ARGS (MTP3→MTP4), fresh M1+gate re-baseline, fresh `restart-primary` op (manual serve pid 21537 runs k=3 flags today).
+  1. 19:55 row: ratify MTP **k=4-lm-head** as canonical (+23.2% M1, 140.36; near-tie-class gate). If yes → flip serve wrappers (`--draft-tokens 4`, both copies `tools/autoninfer/supervisor/ninfer-serve.sh` + `/opt/supervisor-scripts/ninfer-serve.sh`), README M1 menu + baseline, `quality_gate.sh` canonical SPEC_ARGS (MTP3→MTP4), fresh M1+gate re-baseline, fresh `restart-primary` op.
   2. 17:45 row: ratify closing the MTP losslessness series (k>0 = accepted near-tie class).
-- GPU 1 HEALTHY at 21:04 (triad 1467.1 GiB/s, FMA 111.25 TFLOP/s). All GPU work this iteration on GPU 1.
-- Interactive session **pid 21662**: alive but idle (cputime frozen 1:17:40 since ~19:22, no child processes at 21:00). Its DSpark WIP is now **committed** (below) — nothing of it remains in the tree. Do not kill it; `restart-primary` stays deferred while it lives.
-- `/tmp/autoninfer-ops/pending.json` still holds `{"action":"restart-primary"}`. Do NOT re-queue.
-- No background jobs (bg.sh ledger empty).
+- GPU 1 HEALTHY at 21:10 (triad 1467.1 GiB/s, FMA 111.27 TFLOP/s). All GPU work this iteration on GPU 1.
+- Interactive session **pid 21662**: alive but idle (cputime frozen at 01:17:40 since ~19:22). Its DSpark WIP is committed (Ops 1+2 below) — nothing of it remains in the tree. Do not kill it.
+- `/tmp/autoninfer-ops/pending.json` is now **empty** (the queued `restart-primary` was consumed between iterations). Serve state at 21:40: the **manual** serve (pid 21537, started 08:20, k=3 flags) is live and 200 on 8080; supervisor `ninfer-serve` is **FATAL ("Exited too quickly")** — consistent with a restart attempt colliding with the manual serve holding port 8080. The driver's self-heal keys on `/v1/models` (200), so it will not re-try while the manual serve answers. Do not touch either from an iteration.
+- No background jobs (bg.sh ledger empty; the pipeline run was forgotten on completion).
 
-## What was done (one experiment: DSpark Op 2 takeover + landing)
-The previous driver iteration (13) had taken over the session's converged DSpark Op 2 WIP (protocol: 30+ min no writes, session idle) and was mid-debug (RoPE scatter mismatches vs oracle) when it hit the 3600s timeout at 20:56, leaving the tree dirty and unverified. This iteration continued and finished the takeover:
-1. **Diagnosed where iter 13 died:** its /tmp evidence (`/tmp/it15_{lines,errs}.txt`, `/tmp/it14_*` probes/backups) showed it had (a) fixed the kernel's RoPE lane coverage, (b) re-criterion'd the test K/V vs the FP64 oracle under the kernel's BF16 materialization profile (measured max |err| 0.041 K / 0.031 V, ~2x margin in criteria), (c) added the missing stream sync for legacy-stream H2D input prep — but never re-ran the test.
-2. **Rebuilt clean** (`cmake --build build -j`, green) and ran on GPU 1:
-   - `ninfer_dspark_ctx_commit_test` **green** — YaRN table bit-exact vs transformers 5.12.1; commit correctness T=1..128 (small-T + MMA linear routes, base/append position layouts), K/V vs FP64 oracle under the documented profile.
-   - `ninfer_linear_bf16_a16_test` + `ninfer_linear_add_bf16_a16_test` **green** (the WIP's 2 new BF16 linear shapes: 5120×25600 fc, 2048×5120 kv — also exercised end-to-end by the op test via `ops::linear`).
-3. **Stripped** the leftover `#include <cstdio>` in `dspark_kv_rope_scatter.cu` (debug remnant; no other TEMP/debug in the WIP), rebuilt, re-ran the op test (green), **committed `1abe9a8f`** and pushed.
-
-Op 2 = draft-context commit (lane doc §4): taps [25600,T] → fc GEMM → hidden RMSNorm(1e-6) → per-layer kv GEMM → fused per-head k_norm + split-half YaRN rotation (attention factor folded into cos/sin) + draft-KV arena scatter; V scatters bit-exactly, K takes one final BF16 rounding. **Engine-unwired** (no arena/allocation/backend yet) → no M1 impact.
+## What was done (one experiment: DSpark Op 1 landing)
+Per the previous handover's next step: implemented, built, tested, committed DSpark lane Op 1.
+1. **Op `dspark_tap_capture`** (`include/ninfer/ops/dspark_tap_capture.h`, `src/ops/dspark_tap_capture/`): bit-exact store of one target layer's post-residual-add output `[5120, T]` BF16 into slot `s`'s row block `[s*5120, (s+1)*5120)` of the `[25600, T]` tap window. No arithmetic/cast (exact oracle). One 16-byte vector per thread, one block per token — a single fully coalesced copy per layer. Reuses the `ops::dspark` lane geometry from the ctx_commit contract header.
+2. **Target-side sink** (family runtime, `text_context.h`/`text_context_impl.h`): `DsparkTapSink` Tap type with the `begin`/`capture_layer` shape of `DFlashFeatureSink`; maps designated 0-based layers → slots in list order, enforces the once-per-layer mask, stores through the op into this forward's `[25600, T]` slice of the caller-owned transient buffer. **Inert by construction**: no schedule constructs the sink (the DSpark backend doesn't exist), so `NullTap` stays the product-path tap — zero overhead.
+3. **Checkpoint geometry pinned**: 27B `DsparkConfig` (`supported = true`, `feature_rows = 25600`, `target_feature_layers {4,16,28,40,52}` — all GDN layers on the 64-layer hybrid stack; 52 < 64 ✓), 35B carries the unsupported mirror; both variants expose `supports_dspark` (DFlash pattern) for the backend work.
+4. **Evidence (GPU 1):** `ninfer_dspark_tap_capture_test` green — all 5 slots bit-exact into one guarded tap buffer (raw 16-bit random sources, distinct per slot so cross-slot leakage is detected), T ∈ {1, 8, 129, 4096} (decode / DSpark verify width / odd chunk / default chunk), guards intact, contract validation (slot range, shapes, dtype, contiguity, 16B alignment) throws as specified. `ctest -R qwen3_6`: green except the pre-existing missing-checkpoint frontend test (`/home/neroued/...` fixture absent on this host — same failure as before this change). `dspark_ctx_commit` suite green.
+5. **M1 + quality gate** (pipeline `dspark-op1`): M1 113.62 tok/s / 30.15% accept (matches baseline); gate pre/post = **8/8 per-prompt token hashes identical** (rule 2, token-identical for the inert change).
 
 ## DSpark lane status (docs/maintainer/qwen3.8-27b-dspark-lane.md is the authority)
-- Section artifact: done+verified (`out/dspark_27b.ninfer`, 47 objects, round-trip bit-exact; `tools/convert/qwen3_6_27b/dspark.py` @ 943713c0).
-- **Op 2: LANDED (this iteration).** Op 1 (`dspark_tap_capture`, target-side transient store at layers 4/16/28/40/52), Op 3 (`dspark_block_decode`, the 5-layer draft-GQA decode — the big one; note its T=7 verify columns must be per-column T=1 bit-clones per the losslessness rule), Op 4 (`dspark_markov_logits`), the persistent draft-KV arena + round-graph engine wiring: all remaining. Adoption is a product-identity change → BLOCKERS ratification after E2E measurement.
+- Section artifact: done+verified (`out/dspark_27b.ninfer`, 47 objects, round-trip bit-exact).
+- **Op 2 (`dspark_ctx_commit`): LANDED** (`1abe9a8f`). **Op 1 (`dspark_tap_capture`): LANDED (this iteration, `9e694ffe`).**
+- Remaining: **Op 3 (`dspark_block_decode` — the big one)**, Op 4 (`dspark_markov_logits`), the persistent draft-KV arena + round-graph engine wiring (backend), then E2E measurement (M1 at menu ctx 16384 + fit ladder via `EXPERIMENT_FIT=1`) and BLOCKERS ratification (product-identity change).
 
 ## Next iteration (single next step)
-1. **DSpark Op 1 — `dspark_tap_capture`** (chosen: smallest remaining op, unblocks everything downstream; owned by the target program per lane doc §4):
-   - Read lane doc §4 Op 1 + `src/targets/qwen3_6/impl/runtime/text_context_impl.h` `run_layers`/`mlp_tail` (the PostMixer tails of target layers 0-based 4/16/28/40/52 are the store points).
-   - Implement: conditional store of the post-residual-add layer output `[T,5120]` BF16 into the one-chunk transient tap buffer `[T,5,5120]` (slot order = layer order 4,16,28,40,52), active on prefill (per chunk) and verify (T=8) forwards; inert (no store) when the DSpark backend is not selected. A small dedicated store op under `src/ops` (or fused into the residual-add tail) + exact-store op-level test with the naive oracle.
-   - Since no DSpark engine backend/flag exists yet, gate the store on a workspace/sink that is null unless a DSpark tap sink is bound (design the binding so Op 2 can consume it per chunk per the doc: "projected and freed per chunk — no persistent raw-tap arena"). Keep the store a single coalesced copy per layer.
-   - Build, run the new op test + `ctest -R "qwen3_6"` (regression: the store must be zero-overhead when inert), commit.
-2. Then Op 4 (markov logits — medium, uses the MTP lm-head route extended to T=7) or Op 3 (the big draft-GQA decode) — rank against E2E time-to-measurement at that point.
-3. If the user ratified k=4 (check BLOCKERS first): the flip procedure in "state" above takes precedence.
+**DSpark Op 3 — `dspark_block_decode`** (chosen over Op 4: it is the lane's critical path — without the drafter's 5-layer forward there is no E2E measurement; Op 4 is medium and mostly reuses the MTP lm-head route, and ranks as the fallback if Op 3 exceeds one iteration).
+1. Read lane doc §4 Op 3 (the contract: dual-source GQA over the exact visible-key set = arena rows `[0..start)` + all 7 noise rows non-causally; per-layer input norm → q/k/v proj + q_norm/k_norm + YaRN RoPE → o_proj + residual → post norm → `down(silu(gate)*up)` + residual → `final_norm`; 40 q / 8 kv heads, head dim 128, scale 1/√128) + the A1 ideal-attention oracle pattern in `include/ninfer/ops/gqa_attention.h` (BF16 Q, logical BF16 K/V, FP64 scores/softmax/value reduction) + the target small-T GQA decode in `src/ops/launcher/gqa_attention_decode.cu` (the per-column T=1-partition template — `gqa_small_t_*` helpers; the lane's hard rule: the T=7 columns must be bit-identical to the T=1 route per column).
+2. Contract header `include/ninfer/ops/dspark_block_decode.h`: noise hidden `[7, 5120]` BF16, draft arena BF16 `[10240, capacity]` (dim0 fastest, the `ops::dspark::kArenaElementsPerToken` layout from the ctx_commit header — K block then V block per layer), `start` as device I32 `[1]` (visible key count read on-device, the paged-KV-extent mechanism, graph-capture safe), noise positions `[7]` I32 device (absolute), draft weights (per-layer fused qkv `[7168, 5120]`, o_proj, input/post/final norm, per-head q_norm/k_norm `[128]`, fused mlp gate_up `[20480, 5120]` + down, the inv_freq table + attention factor from `dspark_yarn_*`). Check `out/dspark_27b.ninfer`'s 47-object inventory (`dspark/` objects) for the exact tensor names/shapes before naming weight params.
+3. Kernel: per-layer dual-source GQA decode. Implementation template = the target small-T GQA decode, adapted to (a) the draft geometry, (b) the linear (non-paged) arena key source + 7-row non-causal noise block, (c) the YaRN table (reuse `dspark_yarn`), (d) per-column T=1-partition property. Noise K/V (k_norm + RoPE on the 7 rows) can reuse the ctx_commit scatter kernel's norm/rotation stage (or a small dedicated stage); the noise scratch (7 × 20,480 B) is caller workspace.
+4. Op-level test (exact): A1 ideal-attention FP64 oracle over the exact visible-key set (arena rows + 7 noise rows), `start` ∈ {0, 1, 7, 127, 4096-class}, synthetic BF16 weights (like the Op 2 test; YaRN table from `dspark_yarn_inverse_frequencies` + the 19:55-era bit-exact reference), and a **per-column T=1-vs-T=7 bit-parity check** (call the T=1 route per column; must be bit-identical).
+5. If the full op exceeds one iteration, split: land the noise-only path (`start = 0`) + test first, then the arena source. Op 4 is the fallback experiment.
+6. M1 expectation: engine-unwired → no M1 delta (pipeline still runs; gate must stay 8/8 token-identical).
 
 ## Do not repeat / do not touch
-- Re-running the Op 2 test (green on committed source `1abe9a8f`) or the bf16 linear suites; re-measuring M1 k=3/4/5 lm-head (refs above); the k=4 full-head A/B (129.28, discarded).
+- Re-running the Op 1/Op 2 op tests (green on committed source) or the bf16 linear suites; re-measuring M1 k=3/4/5 lm-head (refs above); the k=4 full-head A/B (129.28, discarded).
 - Flipping canonical config (k=4, losslessness closure) without an explicit user yes in BLOCKERS.
-- The manual serve (pid 21537) and GPU 0 in any way; no standby serve; `restart-primary` already pending. Never commit `.env`, `models/`, `out/`.
+- The manual serve (pid 21537) and GPU 0 in any way; no standby serve; do not re-queue `restart-primary` (pending.json is empty; the supervisor FATAL state is the driver's to handle — it self-heals off `/v1/models`).
+- Never commit `.env`, `models/`, `out/`.
 - `stash@{0}` (iter-14 rx-dump tap, orphaned) and `stash@{1}` (267414's layer/logit tap) — don't drop either; the parked losslessness chain (BLOCKERS 17:45) can recover evidence from them if ever re-opened.
 - `/tmp/wt-it13` (worktree @ 18198e78, committed-source binaries for config A/B / k=4 flip) — keep until the k=4 decision is settled; `/tmp/wt` (old gdn-fix worktree, discarded fix) — removable any time.
+- **Test stream discipline (lesson from this iteration):** `GuardedDeviceBuffer::fill` / `DeviceBuffer::copy_from_host` run on the LEGACY default stream; Op calls run on a non-blocking stream with no implicit ordering. Stage all host-side prep, then `cuda_synchronize()` before the first op call (or prep on the op's stream). This race corrupted the T=4096 slot-0 region in a way that looked like an op bug (slots 1–4 correct, slot 0 zeroed by the in-flight 200 MiB memset).
 - GPU 1: `bash tools/gpu_health.sh 1` before any benchmark session.
