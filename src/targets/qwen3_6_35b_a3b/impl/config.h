@@ -90,6 +90,14 @@ struct DFlashConfig {
                                                                            22, 27, 32, 37};
 };
 
+// DSpark draft speculator (experimental lane): 27B-target-only, unsupported here.
+struct DsparkConfig {
+    static constexpr bool supported      = false;
+    static constexpr int feature_layers  = 0;
+    static constexpr int feature_rows    = 0;
+    static constexpr int hidden          = 0;
+};
+
 inline constexpr float kAttentionScale                   = 0.0625F;
 inline constexpr float kGdnScale                         = 0.08838834764831845F;
 inline constexpr std::uint32_t kPrefillChunkAlignment    = 128;

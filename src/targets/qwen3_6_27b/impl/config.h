@@ -83,6 +83,17 @@ struct DFlashConfig {
     static constexpr int kv_size        = 0;
 };
 
+// DSpark draft speculator (experimental lane, docs/maintainer/qwen3.8-27b-dspark-lane.md):
+// auxiliary taps are the target's post-residual-add outputs at these 0-based layers,
+// in slot order (25600-wide concat into dspark_ctx_commit's taps input).
+struct DsparkConfig {
+    static constexpr bool supported      = true;
+    static constexpr int feature_layers  = 5;
+    static constexpr int feature_rows    = feature_layers * TextConfig::hidden; // 25600
+    static constexpr int hidden          = TextConfig::hidden;                  // 5120
+    static constexpr std::array<int, feature_layers> target_feature_layers{4, 16, 28, 40, 52};
+};
+
 inline constexpr float kAttentionScale                   = 0.0625F;
 inline constexpr float kGdnScale                         = 0.08838834764831845F;
 inline constexpr std::uint32_t kPrefillChunkAlignment    = 128;

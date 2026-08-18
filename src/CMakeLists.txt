@@ -147,6 +147,8 @@ add_library(ninfer_ops STATIC
   ops/dspark_ctx_commit/dspark_yarn.cpp
   ops/dspark_ctx_commit/dspark_kv_rope_scatter.cu
   ops/dspark_ctx_commit/dspark_ctx_commit.cpp
+  ops/dspark_tap_capture/dspark_tap_capture.cpp
+  ops/dspark_tap_capture/dspark_tap_capture.cu
   ops/linear/bf16/bf16_gemv.cu
   ops/linear/bf16/bf16_gemm_mma.cu
   ops/linear/bf16/bf16_small_t.cu

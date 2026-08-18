@@ -147,6 +147,27 @@ struct DFlashFeatureSink {
     void consume_prefill_chunk(std::int32_t tokens, bool rewrite_checkpoint);
 };
 
+// DSpark draft speculator (experimental lane, qwen3.8-27b target):
+// auxiliary-tap capture. The five designated target decoder layers (slot order
+// = the checkpoint's auxiliary layer list, 0-based 4/16/28/40/52 on the 27B
+// target) store their post-residual-add output [T, 5120] BF16 into the
+// transient one-chunk tap buffer [25600, T] (row slot*5120 + [0,5120)). The
+// buffer is caller-owned workspace (projected by dspark_ctx_commit and freed
+// per chunk); this sink only performs the conditional stores and is never
+// constructed while the DSpark backend is not selected (NullTap stays the
+// product-path tap, so the store is inert by construction).
+struct DsparkTapSink {
+    static constexpr bool enabled = true;
+
+    Tensor* features = nullptr; // transient tap buffer [25600, capacity] (dim0 fastest), caller-owned
+    std::span<const int> layers; // designated target 0-based layers, slot order
+    std::uint32_t captured_mask  = 0;
+    std::int32_t active_tokens   = 0;
+
+    void begin(const Tensor& value);
+    void capture_layer(int layer, const Tensor& value, cudaStream_t stream);
+};
+
 class VisionPrefillSession;
 
 class TextContext {

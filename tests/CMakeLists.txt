@@ -190,6 +190,7 @@ set(ninfer_op_tests
   gdn_gating
   gdn_gating_proj
   dspark_ctx_commit
+  dspark_tap_capture
   rope
   vision_pos_embed
   vision_attention

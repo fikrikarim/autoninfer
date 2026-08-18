@@ -17,6 +17,7 @@ struct Variant {
     using TextConfig                     = detail::TextConfig;
     using VisionConfig                   = detail::VisionConfig;
     using DFlashConfig                   = detail::DFlashConfig;
+    using DsparkConfig                   = detail::DsparkConfig;
     using ModelView                      = detail::RuntimeModelView;
     using FullAttentionProjectionWeights = detail::AttentionProjectionPayload;
     using GdnProjectionWeights           = detail::GdnProjectionPayload;
@@ -33,6 +34,7 @@ struct Variant {
     static constexpr std::uint32_t maximum_dflash_draft_tokens = kMaximumDFlashDraftTokens;
     static constexpr std::uint32_t maximum_context             = kNativeContext;
     static constexpr bool supports_dflash                      = DFlashConfig::supported;
+    static constexpr bool supports_dspark                      = DsparkConfig::supported;
     static constexpr std::int32_t draft_head_rows              = 131072;
 
     [[nodiscard]] static std::vector<GraphExecutionProfile>

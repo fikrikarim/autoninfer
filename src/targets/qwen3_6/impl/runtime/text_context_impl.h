@@ -9,6 +9,7 @@
 #include "ninfer/ops/argmax.h"
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/causal_conv1d_silu.h"
+#include "ninfer/ops/dspark_tap_capture.h"
 #include "ninfer/ops/embedding.h"
 #include "ninfer/ops/gated_delta_net.h"
 #include "ninfer/ops/gated_rmsnorm.h"
@@ -215,6 +216,35 @@ void DFlashFeatureSink::consume_prefill_chunk(std::int32_t tokens, bool rewrite_
     Tensor feature_window  = features->slice(1, 0, tokens);
     Tensor position_window = positions->slice(0, 0, tokens);
     consume_prefill(feature_window, position_window, rewrite_checkpoint);
+}
+
+void DsparkTapSink::begin(const Tensor& value) {
+    if (features == nullptr || layers.empty() || layers.size() > ops::dspark::kLayers ||
+        features->dtype != DType::BF16 || features->ne[0] != ops::dspark::kTapWidth ||
+        !features->is_contiguous()) {
+        throw std::logic_error("DSpark tap sink is incomplete");
+    }
+    captured_mask = 0;
+    active_tokens = value.ne[1];
+    if (active_tokens <= 0 || active_tokens > features->ne[1]) {
+        throw std::logic_error("DSpark tap buffer is too small for this forward");
+    }
+}
+
+void DsparkTapSink::capture_layer(int layer, const Tensor& value, cudaStream_t stream) {
+    const auto it = std::find(layers.begin(), layers.end(), layer);
+    if (it == layers.end()) { return; }
+    const std::int32_t slot = static_cast<std::int32_t>(it - layers.begin());
+    if (active_tokens <= 0 || value.ne[1] != active_tokens) {
+        throw std::logic_error("DSpark tap capture shape is invalid");
+    }
+    if (captured_mask & (1U << slot)) {
+        throw std::logic_error("DSpark tap layer captured twice");
+    }
+    captured_mask |= 1U << slot;
+    // One coalesced store into this forward's [25600, T] window of the chunk buffer.
+    Tensor window = features->slice(1, 0, active_tokens);
+    ops::dspark_tap_capture(value, slot, window, stream);
 }
 
 TextContext::TextContext(DeviceContext& ctx, const LoadedModelData& weights, WorkspaceArena& work,
