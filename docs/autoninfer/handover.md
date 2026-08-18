@@ -1,4 +1,4 @@
-# Autoninfer handover — 2026-07-15 ~16:50 (driver iteration, gdn-gating committed-column clone)
+# Autoninfer handover — 2026-07-15 ~16:58 (driver iteration, gdn-gating committed-column clone; state fixup 16:57)
 
 ## Outcome of this iteration: DISCARD (engine change not committed)
 
@@ -83,21 +83,27 @@ too.
    **130.13 ± 0.14, 38.4% accept at k=3** — the accept gap (30 vs 38%) implies a different
    operating point (check that row's flags in results.tsv before quoting either).
 
-## Repo / serve state (unchanged by this iteration)
+## Repo / serve state (as of ~16:57)
 
-- **Main tree: NO engine change committed this iteration.** HEAD `28795af6` + the live
-  interactive session's uncommitted WIP (10 files: FP8 linear T=2..4 clone family + temp layer-hash
-  tap + temp op-dump test; last file write 12:54; pid 21662 was alive at 15:37 — re-check
-  `ps aux | grep " pi$"` + `git status` first). If the session is gone and the tree still dirty,
-  its work is stranded — do NOT commit another session's WIP; note it in BLOCKERS.
-- `.env` never staged. Docs-only commit this iteration: handover + results row.
+- **Main tree: NO engine change committed this iteration.** HEAD `912dd5cb` (this iteration's
+  docs commit) on f2dbd156. **Tree state changed mid-iteration**: a SECOND interactive session
+  (pid 267414, started 15:53; the first, pid 21662, still running since 08:22) was active during
+  my experiment and, by 16:55: (a) reverted/abandoned the 8-file FP8-linear WIP + its temp tests
+  (gone from status, no commit — user's call, do not resurrect), (b) locally ignored `.env` and
+  `.pi/` (now invisible to git status — good hygiene, left alone), (c) left ONLY the 235-line
+  layer-hash tap as WIP: `src/targets/qwen3_6/impl/runtime/text_context.h` +
+  `text_context_impl.h` (uncommitted; note the tap's 15:23 edit had a compile error,
+  `DType::F32` -> use `DType::BF16`). Both sessions may still be working — re-check
+  `ps aux | grep " pi$"` + `git status` before touching the main tree; do NOT commit their WIP.
+- `.env` never staged by me. Docs-only commits this iteration: 912dd5cb (handover + results row)
+  + a follow-up fixup (this state section).
 - **GPU 0 / serve: untouched.** Harness serve = manual process (pid 21537 at 15:17, flags
   `--max-context 262144 --kv-capacity 262144 --kv-dtype int8 --max-concurrency 2 --spec mtp
   --draft-tokens 3 --lm-head-draft` — note: NO `--pending-timeout-ms 300000`); supervisor
   `ninfer-serve` STOPPED; `/tmp/autoninfer-ops/pending.json` = `{"action":"restart-primary"}`
   (queued 08:45, still unapplied — the next driver iteration applies it between experiments;
   do NOT re-queue). Expect supervisor serve (wrapper flags incl. the pending-timeout) after that.
-- Standby never started. GPU 1 free.
+- Standby never started. GPU 1 free (idle at 16:57; HEALTHY at 16:01: triad 1466.6 GiB/s).
 - OPEN BLOCKERS row (unchanged): user ratification of keeping MTP at k=3 after the losslessness
   series converges + quality gate. The k0@137 anomaly does NOT need the user (research question).
 
