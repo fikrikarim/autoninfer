@@ -41,45 +41,15 @@ std::int32_t gqa_small_t_split_upper_bound(std::int32_t window) {
 }
 
 template <typename Geometry>
-std::int32_t gqa_small_t_split_count(std::int32_t window, std::int32_t tokens, DType kv_dtype) {
-    // A 64-key default split just above a 32-key boundary makes the partial
-    // kernel execute a nearly empty second tile. These short ranges instead
-    // launch one 32-key tile per split; the larger CTAs keep the small grid busy.
-    if (kv_dtype == DType::I8 && tokens == 5 && window > 128 && window <= 512) {
-        return div_up(window, 32 / Geometry::DecodeSplitScale);
-    }
-    if (kv_dtype == DType::I8 && tokens == 6 && window > 128 && window <= 160) {
-        return div_up(window, 24 / Geometry::DecodeSplitScale);
-    }
-    // Bc=64 is one CTA/SM on these model shapes. Keep the 8K grid at or below
-    // one 170-SM wave after accounting for the geometry's KV-head count.
-    if (kv_dtype == DType::I8 && tokens == 6 && window > 5000 && window <= 8198) {
-        const std::int32_t splits   = div_up(window, 192 / Geometry::DecodeSplitScale);
-        constexpr std::int32_t kMin = 4 * Geometry::DecodeSplitScale;
-        constexpr std::int32_t kMax = 42 * Geometry::DecodeSplitScale;
-        const std::int32_t clamped  = (splits > kMin) ? splits : kMin;
-        return (clamped < kMax) ? clamped : kMax;
-    }
-    return gqa_small_t_split_upper_bound<Geometry>(window);
-}
-
-template <typename Geometry>
-std::int32_t gqa_small_t_launch_capacity(GqaExecutionEnvelope envelope, std::int32_t tokens,
-                                         DType dtype) {
-    std::int32_t capacity = 0;
-    const auto include    = [&](std::uint32_t window) {
-        if (window < envelope.min_visible_keys || window > envelope.max_visible_keys) { return; }
-        const auto splits =
-            gqa_small_t_split_count<Geometry>(static_cast<std::int32_t>(window), tokens, dtype);
-        capacity = capacity > splits ? capacity : splits;
-    };
-    include(envelope.min_visible_keys);
-    include(envelope.max_visible_keys);
-    // The policy is monotonic inside these finite segments and may drop when crossing a boundary.
-    // Evaluating every segment end plus both interval ends gives the exact interval maximum.
-    constexpr std::uint32_t ends[] = {128, 160, 512, 4096, 5000, 8198, 16390};
-    for (const std::uint32_t end : ends) { include(end); }
-    return capacity;
+std::int32_t gqa_small_t_launch_capacity(GqaExecutionEnvelope envelope) {
+    // The committed-column partition uses the width-independent T=1 split policy
+    // (gqa_small_t_default_splits). gqa_small_t_split_upper_bound bounds that
+    // policy pointwise and is non-decreasing, so the envelope maximum is the
+    // exact maximum over every committed window the kernels may see; in
+    // particular the launch grid never clamps the committed split count below
+    // the T=1 route's own count at the same position.
+    return gqa_small_t_split_upper_bound<Geometry>(static_cast<std::int32_t>(
+        envelope.max_visible_keys));
 }
 
 template <typename Geometry, int TokenTile, int WarpsPerCta, bool MultiBatch, bool Masked,
@@ -152,14 +122,14 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
                 static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data));
     };
     if constexpr (TokenTile == 6) {
-        // Small grids need more warps per CTA. From 2K to 8K, Bc=64 halves key
-        // loop iterations; dynamic smem avoids penalizing the long-context path.
+        // The committed column must clone the T=1 route bit-for-bit (MTP
+        // losslessness): the key tile (KeyBlock) fixes the per-element PV mma
+        // K-association and the online-softmax rescale sequence, so T=6 keeps
+        // T=1's 32-key tile at every window (warp counts are a numerics no-op).
         if (implementation_window > 128 && implementation_window <= 160) {
             launch.template operator()<24, 1, 32, false>();
-        } else if (implementation_window <= 2054) {
-            launch.template operator()<12, 1, 32, false>();
         } else if (implementation_window <= 8198) {
-            launch.template operator()<12, 1, 64, true>();
+            launch.template operator()<12, 1, 32, false>();
         } else {
             launch.template operator()<6, 2, 32, false>();
         }
@@ -224,10 +194,10 @@ std::int32_t gqa_attention_split_capacity(std::int32_t q_heads, std::int32_t tok
         throw std::invalid_argument("gqa_attention split capacity: invalid profile");
     }
     if (q_heads == Gqa27Geometry::QHeads) {
-        return gqa_small_t_launch_capacity<Gqa27Geometry>(envelope, tokens, cache_dtype);
+        return gqa_small_t_launch_capacity<Gqa27Geometry>(envelope);
     }
     if (q_heads == Gqa35Geometry::QHeads) {
-        return gqa_small_t_launch_capacity<Gqa35Geometry>(envelope, tokens, cache_dtype);
+        return gqa_small_t_launch_capacity<Gqa35Geometry>(envelope);
     }
     throw std::invalid_argument("gqa_attention split capacity: unsupported head geometry");
 }
@@ -241,8 +211,7 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
                                       cudaStream_t stream) {
     const auto logical_capacity      = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto implementation_window = static_cast<std::int32_t>(envelope.max_visible_keys);
-    const auto splits =
-        gqa_small_t_launch_capacity<Geometry>(envelope, invocation.width, cache.dtype);
+    const auto splits = gqa_small_t_launch_capacity<Geometry>(envelope);
 
     // BF16 keeps its row-tile warp count; INT8 selects its producer/consumer
     // geometry inside launch_tc_partial_i8.

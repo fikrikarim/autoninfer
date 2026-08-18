@@ -93,29 +93,62 @@ __device__ __forceinline__ int gqa_small_t_default_splits(int window) {
     return splits < Geometry::DecodeSplits ? splits : Geometry::DecodeSplits;
 }
 
-template <typename Geometry, bool Int8>
-__device__ __forceinline__ int gqa_small_t_active_splits(int window, int launch_capacity,
-                                                         int tokens) {
+// Committed-column split count: the width-independent T=1 decode policy. The
+// committed column must clone the width-1 route bit-for-bit, so the partition
+// (active count and per-split units) is a pure function of the committed
+// window; any tokens-dependent count would re-partition column 0, perturb the
+// verify target argmax, and corrupt the emitted stream.
+template <typename Geometry>
+__device__ __forceinline__ std::int32_t gqa_small_t_active_splits(
+    std::int32_t window, std::int32_t launch_capacity) {
     if (window <= 0) { return launch_capacity; }
-    int splits = 0;
-    if constexpr (Int8) {
-        if (tokens == 5 && window > 128 && window <= 512) {
-            splits = div_up(window, 32 / Geometry::DecodeSplitScale);
-        } else if (tokens == 6 && window > 128 && window <= 160) {
-            splits = div_up(window, 24 / Geometry::DecodeSplitScale);
-        } else if (tokens == 6 && window > 5000 && window <= 8198) {
-            splits             = div_up(window, 192 / Geometry::DecodeSplitScale);
-            constexpr int kMin = 4 * Geometry::DecodeSplitScale;
-            constexpr int kMax = 42 * Geometry::DecodeSplitScale;
-            splits             = splits > kMin ? splits : kMin;
-            splits             = splits < kMax ? splits : kMax;
-        } else {
-            splits = gqa_small_t_default_splits<Geometry>(window);
-        }
-    } else {
-        splits = gqa_small_t_default_splits<Geometry>(window);
-    }
+    const std::int32_t splits = gqa_small_t_default_splits<Geometry>(window);
     return splits < launch_capacity ? splits : launch_capacity;
+}
+
+struct GqaSmallTSplitRange {
+    std::int32_t start;
+    std::int32_t end;
+};
+
+// Committed-column split partition (greedy MTP losslessness, model-doc 8). A
+// verify round commits its first column, and that column must be a
+// finite-precision clone of the ordinary T=1 decode route at the same state.
+// The partition is therefore derived from the committed column's key window
+// [0, committed_window) - the same active count and per-split units a width-1
+// decode would use - and the draft columns' own keys [committed_window,
+// full_window) are folded into the split that owns key committed_window - 1, so
+// [0, full_window) is covered exactly once. For the committed column the causal
+// mask makes that extended tail a numerical no-op (masked scores -inf -> p = 0,
+// alpha = 1), so its per-split partials and the split-ordered combine are
+// bit-identical to the T=1 route for every verify width.
+// Returns the split's {start, end}; a negative start means the split exceeds the
+// active count and must return without writing the neutral value (the reducer
+// never reads it).
+template <typename Geometry, int Bc>
+__device__ __forceinline__ GqaSmallTSplitRange gqa_small_t_split_range(
+    std::int32_t committed_window, std::int32_t full_window, std::int32_t split,
+    std::int32_t launch_capacity) {
+    const std::int32_t active_split_count =
+        gqa_small_t_active_splits<Geometry>(committed_window, launch_capacity);
+    if (split >= active_split_count) { return {-1, -1}; }
+    const std::int32_t logical_tiles = div_up(committed_window, Bc);
+    const bool tile_split            = logical_tiles >= active_split_count;
+    const std::int32_t units_per_split =
+        tile_split ? div_up(logical_tiles, active_split_count)
+                   : div_up(committed_window, active_split_count);
+    const std::int32_t unit_keys   = units_per_split * (tile_split ? Bc : 1);
+    const std::int32_t split_start = split * unit_keys;
+    const std::int32_t split_limit = split_start + unit_keys;
+    const std::int32_t extended    = (committed_window - 1) / unit_keys;
+    // The split owning committed_window - 1 is extended to the full verify window so the
+    // draft columns' own keys are covered exactly once; every other split is capped at the
+    // committed window (a later split whose start reaches the window is empty).
+    const std::int32_t split_end = (split == extended)
+                                       ? full_window
+                                       : (split_limit < committed_window ? split_limit
+                                                                         : committed_window);
+    return {split_start, split_end};
 }
 
 __device__ __forceinline__ int gqa_small_t_tc_swz(int row, int col) {
@@ -167,8 +200,7 @@ __launch_bounds__(256) __global__ void gqa_attention_small_t_reduce_output_kerne
 
     if constexpr (Offset) { positions += column_begin; }
     if constexpr (MultiBatch) { positions += batch * full_width; }
-    const int last_pos = positions[tokens - 1];
-    int output_column  = token;
+    int output_column = token;
     if constexpr (Offset) { output_column += column_begin; }
     if constexpr (MultiBatch) { output_column += batch * full_width; }
 
@@ -182,9 +214,11 @@ __launch_bounds__(256) __global__ void gqa_attention_small_t_reduce_output_kerne
         partial_l += partial_stat_row;
     }
 
-    const int window = last_pos + 1;
+    // The committed-column partition (gqa_small_t_split_range) keys the active split
+    // count off the first column's window; match it exactly.
+    const int committed_window = positions[0] + 1;
     const int active_split_count =
-        gqa_small_t_active_splits<Geometry, Int8>(window, split_count, tokens);
+        gqa_small_t_active_splits<Geometry>(committed_window, split_count);
 
     __shared__ float reduce[256];
 

@@ -121,18 +121,14 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         return;
     }
 
-    const int window = last_pos + 1;
-    const int active_split_count =
-        gqa_small_t_active_splits<Geometry, false>(window, split_count, TokenTile);
-    if (split >= active_split_count) { return; }
-
-    const int logical_tiles = div_up(window, Bc);
-    const bool tile_split   = logical_tiles >= active_split_count;
-    const int units_per_split =
-        tile_split ? div_up(logical_tiles, active_split_count) : div_up(window, active_split_count);
-    const int split_start = split * units_per_split * (tile_split ? Bc : 1);
-    const int split_limit = split_start + units_per_split * (tile_split ? Bc : 1);
-    const int split_end   = (split_limit < window) ? split_limit : window;
+    // Committed-column partition (gqa_small_t_split_range): the first column's
+    // window is split exactly as a T=1 decode would split it, and the draft
+    // columns' own keys extend the owning split to the full verify window.
+    const GqaSmallTSplitRange range =
+        gqa_small_t_split_range<Geometry, Bc>(first_pos + 1, last_pos + 1, split, split_count);
+    if (range.start < 0) { return; }
+    const int split_start = range.start;
+    const int split_end   = range.end;
     if (split_start >= split_end) {
         write_neutral();
         return;
