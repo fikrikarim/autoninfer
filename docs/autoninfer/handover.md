@@ -3,7 +3,7 @@
 **Last updated:** 2026-07-09 by an unattended driver session (experiment: MTP losslessness root cause — DONE for the dominant causes, residual localized).
 
 ## State
-- **HEAD:** `d24f598b` (fix(ops): make the MTP verify range (T<=4) bit-parity with the T=1 decode route), pushed.
+- **HEAD:** `5cbba58c` (fix(ops): make the MTP verify range (T<=4) bit-parity with the T=1 decode route), pushed.
 - **Baseline M1 (keep/discard reference):** `114.35 ± 0.04 tok/s, 30.2% accept` at k=3 (tg128, `--lm-head-draft`, INT8 KV, menu command) — set this iteration (was 111.79 ± 0.07 / 27.1%); k=2 = `116.33 ± 0.43 tok/s, 39.7% accept`.
 - **MTP losslessness status:** 3 of 4 root causes fixed and verified; the remaining one (attention small-t kernels) is precisely localized (below). k=2 ≡ k=3 end-to-end now; k=0/k=1 still diverge (first AIME char diff ~530, unchanged).
 - **Reference streams MOVED:** k=0 AIME (greedy, 1024 tok) is now `434280f5` (2336 chars) — the old ref `c38d794e` is stale (prefill's final T=2..4 chunks use the new 4-chain association). k=1=`190da5d9`, k=2=k=3=`1ac93157`. Interactive-session quality-gate baselines must be refreshed against the new k=0 stream.
