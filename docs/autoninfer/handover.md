@@ -1,85 +1,40 @@
 # Autoninfer handover
 
-**Last updated:** 2026-08-18 ~17:45 UTC by the user's interactive session (driver restarted with the new protocol).
-**State change since iteration 9: the losslessness chain hit the step-back rule - a forced re-rank is due, and a product decision is filed in BLOCKERS.md. Step 0 every iteration: `bash tools/autoninfer/bg.sh check`.**
-
-## Protocol changes now in force (2026-08-18 17:45, commit 73a3f507)
-- **Step 0:** `bash tools/autoninfer/bg.sh check` - every iteration starts here; STALE job (no progress 15 min) -> restart once + record, then BLOCKERS.
-- **Progress invariant:** an iteration ends with a result (results.tsv row, committed change, or recorded decision); max 2 consecutive analysis-only iterations.
-- **Proceed-vs-yield:** a chain re-ranks after a discard / falsification / 3rd analysis-only iteration (5-min cost-benefit vs top backlog item; yield recorded in the handover; closing a series or changing a canonical config = product decision -> BLOCKERS).
-- **Serve deferral is activity-based:** `restart-primary` now applies while interactive sessions are IDLE (in-flight socket / serve-log growth = busy). It is queued and should apply on its own soon - verify with `supervisorctl status ninfer-serve` + `curl -s http://127.0.0.1:8080/v1/models`; the new serve has `--pending-timeout-ms 300000`. Do NOT re-queue.
+**Last updated:** 2026-08-18 ~18:35 UTC by unattended driver session (new protocol in force).
+**This iteration's result: DSpark experimental lane phase 0 — the 2.72 GiB section artifact exists, bit-exact verified; converter + engine-side design doc committed. Next: Op 2 + draft-KV arena.**
 
 ## HEAD & state
-- **HEAD:** `73a3f507`. **Tree is DIRTY with iteration 14's orphaned WIP** (its session was killed at 17:40 by the driver restart): the handover step-1 raw-rx dump tap - 3 files, +301 lines, env-gated (`NINFER_TAP_LOGITS`, `NINFER_TAP_STATE_DUMP`, `NINFER_TAP_POOL_DUMP`, `NINFER_TAP_LAYERS_LO/HI`), self-marked TEMP/strip-before-commit; mtimes 16:50-16:57; `build/` binaries are 16:57 (may contain the tap - inert without env vars). Per the concurrent-session rule: owner gone -> take over (it is YOUR planned step 1, verbatim) or stash it with a message; do not silently delete.
+- **HEAD:** `8339476258c755848be7408daa7e02449c12aa80` (this iteration: `feat(autoninfer)` DSpark lane converter + lane doc + results row + handover). Tree clean.
 - **Baseline M1 (keep/discard reference, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (k=3, 201 rounds, committed-source binary, 82ef8337).
-- **DSpark weights download (architectural lane, backlog #1):** `models/dspark/model.safetensors` = 1.19/2.55 GiB at 17:45, resuming via `hf-mirror.com` (huggingface.co is egress-blocked), registered in the bg ledger (`bg.sh check` shows it). Resume command if it dies: `curl -sSL -C - -o models/dspark/model.safetensors "https://hf-mirror.com/RadixArk/Qwen3.8-27B-DSpark/resolve/main/model.safetensors"` (setsid + `bg.sh add dspark-weights models/dspark/model.safetensors`). Meta files (config.json, dspark.py, dflash.py) already at `models/dspark/`.
-- GPU 1 HEALTHY at 17:33 (triad 1466.6 GiB/s, FMA 110.69 TFLOP/s). All GPU work on GPU 1.
-- `git stash list` still has the tap stash from iteration 9 (`stash@{0}`; fixed-tap diff also at `/tmp/tap_fixed_full.diff`).
+- **DSpark checkpoint: COMPLETE and verified.** `models/dspark/model.safetensors` = 2,718,576,122 B (file = 8 + 6640 header + 2,718,569,474 data span exactly), 62 BF16 tensors, sha256 `9d26d5e637551c24...` (full digest in the conversion report). Finished 17:42 — the 17:45 handover's "1.19/2.55 GiB, resuming" note was stale; nothing was dead, the ledger entry was just lost in the 17:40 driver restart (bg ledger now clean/empty).
+- **Section artifact:** `out/dspark_27b.ninfer` — 2,718,577,666 B, 47 objects, identity `(qwen3.6-27b, dspark-bf16)`, recipe `qwen3_6_27b-dspark-bf16-v1`; **round-trip verified bit-exact (47/47)** in 18 s; report `out/dspark_27b.ninfer.conversion.json`. `out/` + `models/` are git-ignored — never commit them.
+- **Python:** project tools interpreter = `/venv/main/bin/python3` (Python 3.12, torch 2.13.0+cpu). **numpy 2.5.2 was installed into /venv/main this iteration** (task-required by the converter's import chain; system python3 has numpy but no torch).
+- **Interactive session pid 21662:** still alive but dormant (0 CPU jiffies over 4 s at 18:20; last repo write 18:16). It authored the DSpark WIP I committed this iteration (converter @17:56, lane doc @18:16) after its own 17:45 handover directed the driver to this work. My only edits to its files: two arithmetic fixes `46` → `47` objects (converter comment + lane doc §1) — the inventory is 2 + 5×8 + 5 = 47 (preflight asserts 47; the "46" was stale). If the user resumes that session, the diff is trivially visible.
+- **Scratch intact** (/tmp survived the 17:40 driver restart): `/tmp/wt` (gdn-gating fix worktree, discarded chain), `/tmp/tap_fixed_full.diff`, `/tmp/it9_*` (tap A/B + bisect evidence), `/tmp/base_k0.err` etc.
+- **Stashes (do not drop):** `stash@{0}` = iter-14 rx dump tap (orphaned); `stash@{1}` = iter-9 layer/logit tap (F32→FP32-fixed version recoverable via `/tmp/tap_fixed_full.diff`).
+- **Serve (do not touch):** the manual process (pid 21537 since 15:17, no `--pending-timeout-ms`) still powers /v1 (qwen3.8-27b). Supervisor `ninfer-serve` is **FATAL** (exited too quickly — the applied `restart-primary` op raced the manual serve for 127.0.0.1:8080; `/tmp/autoninfer-ops/restart-primary.done` marker present). The new wrapper flags are therefore NOT live. Resolving the manual-vs-supervisor serve is a driver/user concern, not research work.
+- **GPU 1:** idle at 18:25 (0%, 4 MiB). `bash tools/gpu_health.sh 1` before any benchmark.
 
-## The losslessness chain is at a YIELD POINT (step-back rule triggered)
-The chain: 82ef8337 (attribution: gdn_gating_proj committed-column) -> 912dd5cb (fix DISCARDED: moves k0 canonical) -> 5d4d6298 (k0@136 diagnosis: GDN state-pool rx anomaly, arena hypothesis falsified) -> iter 14 (rx dump tap, orphaned above). That is 3 analysis-only iterations on a chain whose last fix was DISCARDED. **Under the new progress invariant the re-rank is MANDATORY this iteration.** The two candidates:
-1. **Finish the rx anomaly** (one more iteration: dump + state-pool code read): even if fixed, it re-lands the gdn-gating clone which MOVED the k0 canonical - i.e. the chain's end state is a defect found, not a kept fix. Expected M1 delta ~0 (the clone's +1.8% was already discarded).
-2. **Yield to DSpark (backlog #1)**: the architectural bet (claimed 3.07-3.28 accepted/step vs MTP ~1.97 expected tok/round), downloads already flowing, pipeline ready (`EXPERIMENT_FIT=1`, `EXPERIMENT_WEIGHTS`, `GATE_SPEC_ARGS`).
-**The deeper issue is a PRODUCT DECISION, filed in BLOCKERS.md for the user:** the k>0 residual (single-token near-tie flips, reconvergent, clearly-correct; k0 canonical bit-exact) is a property of the quantized BF16 target under batched verify - it applies to ANY speculator. Ratifying "accept the near-tie class" closes the losslessness series, stops the M1 bleed (130.13 -> 113.2, ~13% paid for bit-exact verify), and makes DSpark the loop's commitment. Until the user decides, default to yielding to DSpark (the measurement is the deliverable; the ratification row already exists).
+## What was done (one result, per the progress invariant)
+The losslessness chain is at a YIELD (step-back rule, 17:45 handover; product decision filed in BLOCKERS at 17:45, open). Executed the default: **yield to DSpark (backlog #1)** and produced its first lane result:
+1. Step 0: `bg.sh check` — empty ledger; verified the DSpark weights had actually **completed** (safetensors header + exact size, 62 tensors). No dead job to restart.
+2. Ran the interactive session's converter (handed-over WIP): `CUDA_VISIBLE_DEVICES=1 /venv/main/bin/python3 -m tools.convert.qwen3_6_27b.dspark --model-dir models/dspark --out out/dspark_27b.ninfer` → 47/47 objects written + bit-exact round-trip verify, 18 s.
+3. Fixed the stale 46→47 object count (2 places), committed the converter (`tools/convert/qwen3_6_27b/dspark.py`) + engine-side design doc (`docs/maintainer/qwen3.8-27b-dspark-lane.md`) + results row.
+The lane doc is now the **engine-side authority** for the DSpark backend: persistent draft-KV arena (20,480 B/token BF16, linear slot-local, monotonic append, capture-stable), ops 1–5 contracts with FP64 oracles, fit model (23.04 + 13.77·ctx/262144 GiB; fits 16384..131072 on the 32 GiB 5090; 262144 no), round schedule, and the gate plan. MTP remains canonical; DSpark adoption needs BLOCKERS ratification after measurement.
 
-## Next iteration (in order)
-1. `bash tools/autoninfer/bg.sh check` (dspark-weights should be advancing).
-2. Handle the orphaned tap WIP (take over = continue iteration 9's plan step 1; or `git stash push -m "iter-14 rx dump tap (orphaned)"` and yield straight to DSpark).
-3. **If yielding (default):** the DSpark experiment is multi-iteration - this iteration should produce its first RESULT: either the converter's first artifact section (tools/convert/qwen3_6_27b/dspark.py ingesting the HF safetensors, pattern: 35B `dflash/` section, doc `docs/maintainer/qwen3.6-35b-a3b-model.md` S9) once the download completes, or - if the download is still going - the draft-GQA op contract + persistent draft-KV arena design as a committed doc under docs/maintainer (that is a committed change = a result). Full H6 analysis: docs/autoninfer/inspiration.md H6. Fit rule (Ground rule 9): `EXPERIMENT_FIT=1`, matched-context comparison, product adoption = BLOCKERS ratification.
-4. **If finishing the rx anomaly instead:** iteration 9's plan step 1 (raw rx dump via the WIP tap, both binaries) + step 2 (state-pool zero-init/write-coverage read) in one iteration; a fix that still moves k0 canonical stays discarded - file the defect in BLOCKERS as a product decision instead.
-
-## Do not repeat / do not touch
-- Do not re-derive the ruled-out losslessness paths (committed columns of all 3 linear/attention families, GDN fold, KV write, accept kernel, arena layout - all op-verified or empirically falsified). The open chain is the GDN state pool rx only.
-- Do not flip canonical to k=2 (post-fix k=2 ~= k=3, 0ab130b8). Cross-k tok/s A/B is only valid at lossless streams.
-- The pre-17:45 handover's "serve deferred while interactive sessions alive" note is SUPERSEDED (activity-based deferral now; see above).
-- Never restart/touch the GPU 0 serve manually (pid 21537 until the op swaps it); never start/leave the standby serve; never commit `.env` or `models/`.
-- GPU 1: `bash tools/gpu_health.sh 1` before any benchmark.
-- 35B-A3B / 27B groupwise-int artifacts absent locally (models/ has only qwen3_8_27b_nvfp4.ninfer + the dspark/ draft repo).
-- Scratch (lost on reboot): /tmp/wt (worktree f2dbd156: gdn-gating fix), /tmp/tap_fixed_full.diff, /tmp/it9_p*.json (AIME prefixes), /tmp/base_k0.err (canonical k0), /tmp/aime_ab.sh, /tmp/rat_aime*.sh, /tmp/qgate_diff.sh.
-
----
-
-# (Superseded) Iteration 9 handover
-
-
-## HEAD & state
-- **HEAD:** `7ab7b4da` + this iteration's docs commit (results row + handover; nothing else). Tree clean. `git stash list` has **one entry** (see below).
-- **Baseline M1 (keep/discard reference, unchanged):** `113.01 ± 0.05 tok/s, 30.15% accept` (k=3, 201 rounds, committed-source binary, re-baselined at 82ef8337).
-- GPU 1 HEALTHY at 16:40 (triad 1466.7 GiB/s, FMA 110.71 TFLOP/s). All GPU work ran on GPU 1.
-- `/tmp/autoninfer-ops/pending.json` still holds `{"action":"restart-primary"}` (queued 08:45; driver defers while interactive sessions are alive). Do NOT re-queue.
-- Serve: untouched. Interactive session pid 21662 was still alive (dormant: 0 CPU jiffies/4s at check) — it powers no work of mine; do not kill it.
-
-## What was done (one experiment: diagnose the k0 canonical flip)
-The gdn-gating T=2..8 bit-clone (uncommitted, in scratch worktree `/tmp/wt` at f2dbd156) flipped the canonical k=0 AIME stream at idx 136 (base=13, fix=318). The previous handover's prime suspect (arena layout shift from the removed T=2..8 workspace) — **falsified and localized this iteration**:
-
-1. **Took over the abandoned tap WIP** (per protocol: owner session 267414 gone, 65+ min no writes, tree blocked builds with a compile error). The 2-file layer/logit tap (`src/targets/qwen3_6/impl/runtime/text_context{,_impl}.h`, self-marked "STRIP BEFORE COMMIT", env-gated `NINFER_TAP_LOGITS` + `NINFER_TAP_LAYERS_LO/HI`, inert when unset) was **stashed verbatim as `stash@{0}`**, restored into the worktree, and its `DType::F32` typo fixed → `DType::FP32` (enum has FP32; the handover's "use BF16" note was wrong — the lambda is a generic element-size). Full fixed-tap diff saved at `/tmp/tap_fixed_full.diff`. **Tap stripped from the main tree again after the experiment** (tree clean; session's original WIP intact in the stash; recover fixed version with `git stash pop` + the one-line sed, or `git apply /tmp/tap_fixed_full.diff` after a clean checkout).
-2. **Built both A/B binaries:** main tree (base + fixed tap) `build/apps/ninfer` (~6 min incremental) and `/tmp/wt` (fix + fixed tap) `/tmp/wt/build/apps/ninfer` (~10 min). **Note: the /tmp/wt build now CONTAINS the tap** (inert without the env vars — same as main).
-3. **Tap inertness verified:** base+tap binary, k0 AIME, no env vars → first 160 tokens bit-identical to canonical `/tmp/base_k0.err` stream.
-4. **Tap A/B (AIME k0, 256 tok, eager):** first divergence = the state tap line at the **first decode position** — GDN **recurrent state `rx` (layer 0, slot 0) already differs after PREFILL**, before any T=1 decode round. `cx` (conv state), the embedding, and the L0 q/k/v/g/beta columns are bit-identical; then every layer residual and the logits cascade (logits ~3 BF16 ulp off; argmax matches until idx 136).
-5. **Length bisect** (truncated AIME prefixes, `/tmp/it9_p{06,12,18,32,64,130}.json`): post-prefill `rx` **diverges at every prefill length tested** (56, 59, 64, 76, 99, 162, 228 tok — single chunks, T∈[9,1024] Split8 route = unchanged code). ⇒ the anomaly is **not** in the prefill forward (all prefill ops: identical machine code, identical inputs by induction; T=1 GEMV bit-invariant — parity hash `5a60bebb10800c96` on both builds).
-6. **Arena hypothesis falsified empirically:** load summaries byte-identical (arena 172.57 MiB, reservation 1006.12 MiB, identical allocation lines); CLI default `max_concurrency=1` registers no (2..8) workspace range, so the fix's capacity change is a no-op for these runs.
-
-**Verdict:** the fix **stays DISCARDED** (a losslessness-series fix that moves the canonical k=0 stream can't be kept). The remaining suspect class is the **GDN state pool materialization**: rx content differs while cx (same pool, same write path class) matches, at every length, deterministic per build, eager+graph — pointing at zero-init coverage, a partial-write region, or residual device-memory contents from a load-time allocation sequence that differs between builds despite identical final sizes.
-
-## Next iteration (single hypothesis: resolve the state-pool rx anomaly)
-1. **Raw rx value dump** (pattern + magnitude of the diff; distinguishes uninitialized/partial-write region from a 1-ulp write difference):
-   - Add an env-gated raw dump to the tap: in `tap_layer_select` (text_context_impl.h, the `ST` block ~line 790), when `NINFER_TAP_STATE_DUMP=<file>` is set, `fwrite` the full `rx` tensor bytes (and `cx` for reference) for the first selected position. Apply to the main tree (`git apply /tmp/tap_fixed_full.diff` then edit), rebuild main (~6 min), rebuild /tmp/wt (copy the same 2 files, ~10 min).
-   - Run: `CUDA_VISIBLE_DEVICES=1 NINFER_TAP_LOGITS=/dev/null NINFER_TAP_LAYERS_LO=0 NINFER_TAP_LAYERS_HI=1000 NINFER_TAP_STATE_DUMP=/tmp/it10_rx_{b,f}.bin <bin> models/qwen3_8_27b_nvfp4.ninfer --messages /tmp/it9_p06.json --max-context 16384 --kv-dtype int8 --greedy --seed 42 --max-new 2 --no-cuda-graph` on both binaries.
-   - `cmp -l /tmp/it10_rx_b.bin /tmp/it10_rx_f.bin | head -50` → which bytes/rows/heads differ and by how much (rx is FP32: heads×dim×4 B; check whether differing elements are clustered at the tail = never-written init region).
-2. **State pool init/zeroing code read** (in parallel with the builds): the GDN state pool allocation + zero-init (src/core arena / state transaction in src/targets/qwen3_6 family) and the `gated_delta_net` prefill transition's write coverage (does the prefill transition write ALL of rx, or only touched rows/heads?). The fix removed a 30,720 B capacity for T=2..8 — check whether any load-time pass (warmup/graph-capture/kernel-JIT sample) still allocates it in base and not in fix, leaving the freed region's residual contents to bleed into the state pool.
-3. **Then:** if the anomaly is a benign init/coverage defect in the state path → fix the state path (not the gdn op), re-land the gdn fix from `/tmp/wt` (4 files; strip the TEMP_T1REF block from `tests/ops/test_gdn_gating_proj_t_parity.cpp` first), verify M1 + k0 (must reproduce base_k0 bit-exact) + k1 (flip should move off 119), quality gate pre/post, results row. If the anomaly is a real numerical defect → fix it as its own experiment.
-4. Stale backlog after that: k=2 vs k=3 re-decision (pre-fix numbers void), prefill FP8 crossovers (#2), host-side round overhead (#5).
-
-## /tmp evidence (this iteration; recreate nothing)
-- `it9_tap_base.txt` / `it9_tap_fix.txt` (+ `*_run.err`): AIME 256-tok tap A/B (first divergence = ST line). `it9_tap_diff.txt`: the diff.
-- `it9_p{06,12,18,32,64,130}.json` + `it9_p*_b.txt`/`_f.txt`: length bisect (all rx=DIV, cx=OK).
-- `it9_k0_plain.err`: base+tap inertness run. `b_ids.txt`/`n160.txt`/`f160.txt`: token streams (first diff idx 136).
-- `tap_fixed_full.diff`: the fixed tap (session WIP + F32→FP32). `build_main.log`/`build_wt.log`: build logs.
-- Pre-existing (iteration 8): `base_k0{,_r2,_r3}.{out,err}`, `gdnfix_k0{,_eager}.{out,err}`, `m_*.{out,err}`, `lh_*`, `opdump_*`, `matrix.sh`, `ninfer_{old,new,new2}`. `/tmp/wt` = scratch worktree (fix 4 files + tap; build current).
+## Next iteration (single hypothesis: DSpark Op 2 + persistent draft-KV arena)
+Scope: exactly the state-transition core — no target wiring, no CLI, no M1 yet (the round is not runnable until ops 3/4 + `speculative_round` exist).
+1. Read, in order: `docs/maintainer/op-development.md` (admission rules), `docs/maintainer/qwen3.8-27b-dspark-lane.md` §3 (arena) + §4 Op 2 (contract/oracle), and the 35B-A3B DFlash op family under `src/ops/` (block-verify skeleton template; `grep -rn "dflash" src/ops --include=*.h -l`).
+2. Implement the arena: per-slot linear BF16, 20,480 B/token (5 layers × 8 KV heads × 128 dim × K+V × 2 B), capacity startup-fixed at `max_context` (335 MiB at menu ctx 16384); offset `(p, l) = p * 40960 + l * 8192` B per lane doc §3; monotonic append (positions commit in increasing order, written exactly once — no crop, no zero-init, no page table); address capture-stable.
+3. Implement `dspark_ctx_commit`: `x = rmsnorm_1e-6(fc(taps [T,25600]))`; per layer `K = rope_yarn(rmsnorm_head128(k_proj(x)), pos)`, `V = v_proj(x)`; append at absolute positions. T ≤ 8 (verify) and T = chunk (prefill first build). YaRN cos/sin table precomputed once at load, bit-validated against the transformers-5.12.1 `rope_parameters` (models/dspark/config.json). Oracle: the exact formula in FP64 from the BF16 taps (lane doc §4 Op 2; the oracle does not copy kernel staging).
+4. Op-level test at real shapes (T=1..8 verify rows; T=128/1024 prefill builds; positions across the RoPE table range), independent FP64 oracle, run on GPU 1 (`CUDA_VISIBLE_DEVICES=1`, after `bash tools/gpu_health.sh 1`). Build: `cmake --build build -j`.
+5. results.tsv row: op-level oracle GREEN + arena/workspace cost at the menu ctx; **keep** (lane infrastructure; M1 not yet comparable).
 
 ## Do not repeat / do not touch
-- Re-running the AIME tap A/B or the length bisect (evidence preserved above); re-verifying T=1 GEMV bit-invariance (proven both builds); the arena-layout hypothesis (falsified).
-- Building/measuring on the main tree while an interactive pi session is alive (check `ps -eo pid,ppid,stat,etime,cmd | grep -w pi`; exclude drive.sh descendants).
-- `stash@{0}` (the interactive session's tap WIP) — don't drop it; note any change to it in the handover.
-- The manual serve on GPU 0 (pid 21537 at 15:17) — never bind/kill/restart from research work. No standby serve. No re-queue of `restart-primary`. Never commit `.env` (git-ignored).
-- GPU 1: `bash tools/gpu_health.sh 1` before any benchmark session.
+- Re-downloading or re-verifying the DSpark weights (complete + verified; sha in the conversion report). Re-running the converter is fine if the artifact goes missing (18 s), but the report is the evidence of record.
+- The losslessness rx-anomaly hunt (chain parked on the user's ratification of the 17:45 BLOCKERS row; evidence preserved in /tmp + the 5d4d6298 row).
+- The stale "download resuming" state (it completed at 17:42).
+- The manual serve (pid 21537) and GPU 0 in any way; the FATAL supervisor `ninfer-serve` — do not `supervisorctl` it from research work. No standby serve.
+- Committing `.env`, `models/`, `out/`. Dropping the two stashes.
+- Editing the DSpark files if a new interactive session has started writing them (check `ps -eo pid,ppid,stat,etime,cmd | grep -w pi` excluding drive.sh descendants + mtimes first).
+- Wiring DSpark into the target/CLI or claiming an M1 number before ops 3/4 + the speculative_round draft-count extension (≤5 → 7) exist; any M1 comparison for adoption is at the **matched** fitting context (lane doc §5/§7, ground rule 9).
